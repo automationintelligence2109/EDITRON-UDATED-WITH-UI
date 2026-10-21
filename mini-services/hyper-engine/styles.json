@@ -1,0 +1,40 @@
+{
+  "styles": {
+    "pop-cinematic": {
+      "font": "Inter-Bold",
+      "color": "#FFFFFF",
+      "stroke": "#000000",
+      "strokeWidth": 2,
+      "animation": {
+        "type": "pop",
+        "entryDuration": 0.1,
+        "scaleRange": [0.8, 1.1, 1.0],
+        "opacity": [0, 1]
+      }
+    },
+    "mr-beast-style": {
+      "font": "Komika-Axis",
+      "color": "#FFFF00",
+      "stroke": "#000000",
+      "strokeWidth": 4,
+      "animation": {
+        "type": "bounce",
+        "entryDuration": 0.15,
+        "scaleRange": [0, 1.2, 1.0],
+        "rotation": [-5, 5, 0]
+      }
+    },
+    "minimal-doc": {
+      "font": "Roboto-Light",
+      "color": "#EEEEEE",
+      "stroke": "none",
+      "strokeWidth": 0,
+      "animation": {
+        "type": "fade-up",
+        "entryDuration": 0.4,
+        "positionY": [10, 0],
+        "opacity": [0, 1]
+      }
+    }
+  }
+}

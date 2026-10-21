@@ -1,0 +1,6 @@
+torch --index-url https://download.pytorch.org/whl/cpu
+torchaudio --index-url https://download.pytorch.org/whl/cpu
+deepfilternet
+librosa
+numpy
+nltk
