@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { writeFile, unlink, mkdir, rm } from "fs/promises";
-import { createReadStream, existsSync } from "fs";
+import { writeFile, unlink, mkdir, rm, readFile } from "fs/promises";
+import { existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
@@ -20,14 +20,30 @@ const PYTHON_BIN =
 type WordItem = { word: string; start: number; end: number };
 type WhisperCaption = { start: number; end: number; text: string };
 
+// Initialize client with token saved in Dokploy
 const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
 
 /**
  * Turns whatever shape the Replicate Whisper model returns into a flat word list.
- * Handles: output.words, output.segments (with or without words), output.chunks.
- * If only segment-level times exist, words are spread evenly across each segment.
+ * Safely parses both deep-learning chunks format or basic segment lines.
  */
 function toWords(output: any): WordItem[] {
+  // Check if model returned optimized chunks structure
+  if (Array.isArray(output?.chunks) && output.chunks.length > 0) {
+    return output.chunks
+      .map((c: any) => {
+        const startVal = Array.isArray(c.timestamp) ? c.timestamp[0] : 0;
+        const endVal = Array.isArray(c.timestamp) ? c.timestamp[1] : startVal;
+        return {
+          word: String(c.text ?? "").trim(),
+          start: Number(startVal ?? 0),
+          end: Number(endVal ?? 0),
+        };
+      })
+      .filter((w: WordItem) => w.word.length > 0);
+  }
+
+  // Fallback for standard word mapping formats
   if (Array.isArray(output?.words) && output.words.length > 0) {
     return output.words
       .map((w: any) => ({
@@ -38,16 +54,7 @@ function toWords(output: any): WordItem[] {
       .filter((w: WordItem) => w.word.length > 0);
   }
 
-  const segments: any[] = Array.isArray(output?.segments)
-    ? output.segments
-    : Array.isArray(output?.chunks)
-      ? output.chunks.map((c: any) => ({
-          text: c.text,
-          start: Array.isArray(c.timestamp) ? c.timestamp[0] : 0,
-          end: Array.isArray(c.timestamp) ? c.timestamp[1] : 0,
-        }))
-      : [];
-
+  const segments: any[] = Array.isArray(output?.segments) ? output.segments : [];
   const words: WordItem[] = [];
   for (const seg of segments) {
     const tokens = String(seg.text ?? "").trim().split(/\s+/).filter(Boolean);
@@ -146,16 +153,22 @@ export async function POST(req: NextRequest) {
     });
 
     // --- STEP 3: TRANSCRIPTION (Replicate) ---
-    const modelId = process.env.REPLICATE_WHISPER_MODEL;
-    if (!modelId) throw new Error("REPLICATE_WHISPER_MODEL is not set.");
+    // Read the processed local audio binary file and transform it into a base64 network data URI
+    const audioBuffer = await readFile(audioPath);
+    const base64Audio = `data:audio/wav;base64,${audioBuffer.toString("base64")}`;
 
-    const input: Record<string, unknown> = {
-      audio: createReadStream(audioPath),
+    const inputInput: Record<string, unknown> = {
+      audio: base64Audio,
       task: mode,
+      timestamp: "word" // Tells Incredibly Fast Whisper to return exact word timings
     };
-    if (language && language !== "auto") input.language = language;
+    if (language && language !== "auto") inputInput.language = language;
 
-    const output: any = await replicate.run(modelId as `${string}/${string}`, { input });
+    // Hardcoded production model pointer for vaibhavs10/incredibly-fast-whisper
+    const output: any = await replicate.run(
+      "vaibhavs10/incredibly-fast-whisper:3ab86df6c9f356f1a3ffefdee62d32085802f9e4eac3536319282b47c0be37ff",
+      { input: inputInput }
+    );
 
     const words = toWords(output);
     if (words.length === 0) {
@@ -178,7 +191,7 @@ export async function POST(req: NextRequest) {
       language: output?.detected_language || output?.language || language,
       captionCount: captions.length,
       mode,
-      tightenedVideoUrl: tightenedPath, // still a server path; replace with a Supabase signed URL next
+      tightenedVideoUrl: tightenedPath, 
       elapsedMs: Date.now() - startedAt,
     });
   } catch (err: unknown) {
