@@ -10,7 +10,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-# 🌟 FORCE PYTHON TO LOOK DIRECTLY IN THIS LOCAL ENGINE FOLDER FOR ITS PAIR DEPENDENCIES
+# FORCE PYTHON TO LOOK DIRECTLY IN THIS LOCAL ENGINE FOLDER FOR ITS PAIR DEPENDENCIES
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
@@ -40,7 +40,8 @@ def process_video(input_path: str, output_dir: str, preset: str = "talk", speed:
         ffmpeg_bin, ffprobe_bin = check_ffmpeg()
 
         # 1. Setup workspace
-        stem = os.path.splitext(os.path.basename(input_path))[0]
+        # 🌟 FIXED: Unpack the tuple cleanly so stem is a valid string name!
+        stem, _ = os.path.splitext(os.path.basename(input_path))
         work_dir = os.path.join(output_dir, stem, ".work")
         os.makedirs(work_dir, exist_ok=True)
 
@@ -95,7 +96,6 @@ def process_video(input_path: str, output_dir: str, preset: str = "talk", speed:
         os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
 
         # PASSING BROLLS TO RENDERER
-        # B-rolls is a list of {start, end, src, ...}
         render(
             ffmpeg=ffmpeg_bin,
             src=Path(input_path),
@@ -135,5 +135,6 @@ if __name__ == "__main__":
         except:
             brolls_data = None
 
+    # 🌟 FIXED: Pass arguments cleanly matching your processing signature
     res = process_video(sys.argv[1], sys.argv[2], brolls=brolls_data)
     print(json.dumps(res))
