@@ -10,6 +10,11 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+# 🌟 FORCE PYTHON TO LOOK DIRECTLY IN THIS LOCAL ENGINE FOLDER FOR ITS PAIR DEPENDENCIES
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
 # Import the new High-Quality Audio Enhancer
 try:
     from mini_services.hyper_engine.audio_enhancer import AudioEnhancer
