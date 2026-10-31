@@ -168,14 +168,12 @@ export async function POST(req: NextRequest) {
 
     // The complete Replicate model version is supplied through Dokploy.
     const replicateToken = process.env.REPLICATE_API_TOKEN;
-    const replicateModelVersion = process.env.REPLICATE_MODEL_VERSION;
+    const replicateModelVersion =
+      process.env.REPLICATE_MODEL_VERSION ||
+      "turian/insanely-fast-whisper-with-video:4f41e90243af171da918f04da3e526b2c247065583ea9b757f2071f573965408";
 
     if (!replicateToken) {
       throw new Error("REPLICATE_API_TOKEN is not configured at runtime.");
-    }
-
-    if (!replicateModelVersion) {
-      throw new Error("REPLICATE_MODEL_VERSION is not configured at runtime.");
     }
 
     const replicate = new Replicate({ auth: replicateToken });
