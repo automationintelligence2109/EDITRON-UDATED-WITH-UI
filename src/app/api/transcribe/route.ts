@@ -22,18 +22,8 @@ type WhisperCaption = { start: number; end: number; text: string };
 
 // Replicate configuration is supplied by Dokploy environment variables.
 // Never hardcode the token or model version in this file.
-const replicateToken = process.env.REPLICATE_API_TOKEN;
-const replicateModelVersion = process.env.REPLICATE_MODEL_VERSION;
-
-if (!replicateToken) {
-  throw new Error("REPLICATE_API_TOKEN is not configured.");
-}
-
-if (!replicateModelVersion) {
-  throw new Error("REPLICATE_MODEL_VERSION is not configured.");
-}
-
-const replicate = new Replicate({ auth: replicateToken });
+// Replicate is initialized inside POST so Next.js can build this route
+// even when runtime environment variables are not available during the build.
 
 /**
  * Turns whatever shape the Replicate Whisper model returns into a flat word list.
@@ -177,6 +167,19 @@ export async function POST(req: NextRequest) {
     if (language && language !== "auto") inputInput.language = language;
 
     // The complete Replicate model version is supplied through Dokploy.
+    const replicateToken = process.env.REPLICATE_API_TOKEN;
+    const replicateModelVersion = process.env.REPLICATE_MODEL_VERSION;
+
+    if (!replicateToken) {
+      throw new Error("REPLICATE_API_TOKEN is not configured at runtime.");
+    }
+
+    if (!replicateModelVersion) {
+      throw new Error("REPLICATE_MODEL_VERSION is not configured at runtime.");
+    }
+
+    const replicate = new Replicate({ auth: replicateToken });
+
     // Example format: owner/model:version-id
     let output: any;
     try {
