@@ -20,8 +20,20 @@ const PYTHON_BIN =
 type WordItem = { word: string; start: number; end: number };
 type WhisperCaption = { start: number; end: number; text: string };
 
-// Initialize client with token saved in Dokploy
-const replicate = new Replicate({ auth: process.env.REPLICATE_API_TOKEN });
+// Replicate configuration is supplied by Dokploy environment variables.
+// Never hardcode the token or model version in this file.
+const replicateToken = process.env.REPLICATE_API_TOKEN;
+const replicateModelVersion = process.env.REPLICATE_MODEL_VERSION;
+
+if (!replicateToken) {
+  throw new Error("REPLICATE_API_TOKEN is not configured.");
+}
+
+if (!replicateModelVersion) {
+  throw new Error("REPLICATE_MODEL_VERSION is not configured.");
+}
+
+const replicate = new Replicate({ auth: replicateToken });
 
 /**
  * Turns whatever shape the Replicate Whisper model returns into a flat word list.
@@ -164,11 +176,18 @@ export async function POST(req: NextRequest) {
     };
     if (language && language !== "auto") inputInput.language = language;
 
-    // Hardcoded production model pointer for vaibhavs10/incredibly-fast-whisper
-    const output: any = await replicate.run(
-      "vaibhavs10/incredibly-fast-whisper:3ab86df6c9f356f1a3ffefdee62d32085802f9e4eac3536319282b47c0be37ff",
-      { input: inputInput }
-    );
+    // The complete Replicate model version is supplied through Dokploy.
+    // Example format: owner/model:version-id
+    let output: any;
+    try {
+      output = await replicate.run(replicateModelVersion, {
+        input: inputInput,
+      });
+    } catch (replicateError: any) {
+      const detail = replicateError?.message || String(replicateError);
+      console.error("[Replicate] Error:", detail);
+      throw new Error(`Replicate transcription failed: ${detail}`);
+    }
 
     const words = toWords(output);
     if (words.length === 0) {
