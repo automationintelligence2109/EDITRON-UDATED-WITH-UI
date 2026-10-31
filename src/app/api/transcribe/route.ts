@@ -160,20 +160,27 @@ export async function POST(req: NextRequest) {
     const base64Audio = `data:audio/wav;base64,${audioBuffer.toString("base64")}`;
 
     const inputInput: Record<string, unknown> = {
-      audio: base64Audio,
+      // This model expects the uploaded media in the `url` input.
+      url: base64Audio,
       task: mode,
-      timestamp: "word" // Tells Incredibly Fast Whisper to return exact word timings
+      // The model's chunk timestamps are returned as [start, end] arrays.
+      // Word mode causes this model to fail internally with a tuple error.
+      timestamp: "chunk",
     };
     if (language && language !== "auto") inputInput.language = language;
+    inputInput.batch_size = 24;
+    inputInput.diarise_audio = false;
 
     // The complete Replicate model version is supplied through Dokploy.
     const replicateToken = process.env.REPLICATE_API_TOKEN;
-    const replicateModelVersion =
-      process.env.REPLICATE_MODEL_VERSION ||
-      "turian/insanely-fast-whisper-with-video:4f41e90243af171da918f04da3e526b2c247065583ea9b757f2071f573965408";
+    const replicateModelVersion = process.env.REPLICATE_MODEL_VERSION;
 
     if (!replicateToken) {
       throw new Error("REPLICATE_API_TOKEN is not configured at runtime.");
+    }
+
+    if (!replicateModelVersion) {
+      throw new Error("REPLICATE_MODEL_VERSION is not configured at runtime.");
     }
 
     const replicate = new Replicate({ auth: replicateToken });
