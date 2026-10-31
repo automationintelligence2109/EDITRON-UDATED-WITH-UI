@@ -24,7 +24,7 @@ except ImportError:
     except ImportError:
         AudioEnhancer = None
 
-from audio import extract_wav_16k_mono, probe_duration
+from .audio import extract_wav_16k_mono, probe_duration
 from silence import detect_silences
 from plan import build_plan
 from render import render
