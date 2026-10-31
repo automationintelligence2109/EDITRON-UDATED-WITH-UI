@@ -3,7 +3,7 @@ FROM node:22-slim
 
 # 2. Install Python, FFmpeg, and required tools
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
         python3 \
         python3-pip \
         python3-venv \
@@ -37,12 +37,14 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # 9. Build the Next.js application
 RUN npm run build
 
-# 10. Copy all Python AI Cut Engine files into the generated runtime folder
+# 10. Copy all AI Cut Engine Python files into the generated runtime folder
 RUN mkdir -p /app/.next/standalone/src/backend/cut_engine && \
-    cp /app/src/backend/cut_engine/*.py \
-       /app/.next/standalone/src/backend/cut_engine/
+    cp -av /app/src/backend/cut_engine/*.py \
+        /app/.next/standalone/src/backend/cut_engine/ && \
+    test -f /app/.next/standalone/src/backend/cut_engine/audio.py && \
+    echo "audio.py copied successfully"
 
-# 11. Make sure Python can find the AI Cut Engine modules
+# 11. Make Python find the AI Cut Engine modules
 ENV PYTHONPATH=/app/.next/standalone/src/backend/cut_engine:/app/src/backend/cut_engine
 
 # 12. Expose the application port
