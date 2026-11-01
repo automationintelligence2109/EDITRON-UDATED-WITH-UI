@@ -167,7 +167,8 @@ export async function POST(req: NextRequest) {
       // Word mode causes this model to fail internally with a tuple error.
       timestamp: "chunk",
     };
-    if (language && language !== "auto") inputInput.language = language;
+    // Leave language unset so the Replicate model detects it automatically.
+    // Regional browser values such as "en-in" are not accepted by this model.
     inputInput.batch_size = 24;
     inputInput.diarise_audio = false;
 
