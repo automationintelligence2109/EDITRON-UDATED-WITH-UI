@@ -54,52 +54,73 @@ function getR2Client() {
 }
 
 /**
- * Turns whatever shape the Replicate Whisper model returns into a flat word list.
- * Safely parses both deep-learning chunks format or basic segment lines.
+ * Turns Replicate's chunk, word, or segment output into individual words.
+ * The video Whisper model returns chunks whose `text` can contain many words.
  */
 function toWords(output: any): WordItem[] {
-  // Check if model returned optimized chunks structure
-  if (Array.isArray(output?.chunks) && output.chunks.length > 0) {
-    return output.chunks
-      .map((c: any) => {
-        const startVal = Array.isArray(c.timestamp) ? c.timestamp[0] : 0;
-        const endVal = Array.isArray(c.timestamp) ? c.timestamp[1] : startVal;
-        return {
-          word: String(c.text ?? "").trim(),
-          start: Number(startVal ?? 0),
-          end: Number(endVal ?? 0),
-        };
-      })
-      .filter((w: WordItem) => w.word.length > 0);
-  }
-
-  // Fallback for standard word mapping formats
-  if (Array.isArray(output?.words) && output.words.length > 0) {
-    return output.words
-      .map((w: any) => ({
-        word: String(w.word ?? w.text ?? "").trim(),
-        start: Number(w.start ?? 0),
-        end: Number(w.end ?? 0),
-      }))
-      .filter((w: WordItem) => w.word.length > 0);
-  }
-
-  const segments: any[] = Array.isArray(output?.segments) ? output.segments : [];
   const words: WordItem[] = [];
-  for (const seg of segments) {
-    const tokens = String(seg.text ?? "").trim().split(/\s+/).filter(Boolean);
-    if (tokens.length === 0) continue;
-    const start = Number(seg.start ?? 0);
-    const end = Number(seg.end ?? start);
-    const step = (end - start) / tokens.length;
-    tokens.forEach((t, i) => {
+
+  const addTimedText = (textValue: unknown, startValue: unknown, endValue: unknown) => {
+    const text = String(textValue ?? "").trim();
+    if (!text) return;
+
+    const tokens = text.split(/\s+/).filter(Boolean);
+    const start = Number.isFinite(Number(startValue)) ? Number(startValue) : 0;
+    const rawEnd = Number(endValue);
+    const end = Number.isFinite(rawEnd) && rawEnd >= start ? rawEnd : start;
+    const duration = Math.max(0, end - start);
+    const step = tokens.length > 0 ? duration / tokens.length : 0;
+
+    tokens.forEach((token, index) => {
       words.push({
-        word: t,
-        start: +(start + step * i).toFixed(3),
-        end: +(start + step * (i + 1)).toFixed(3),
+        word: token,
+        start: +(start + step * index).toFixed(3),
+        end: +(start + step * (index + 1)).toFixed(3),
       });
     });
+  };
+
+  // Turian's model returns chunks like:
+  // { text: "many words here", timestamp: [start, end] }
+  if (Array.isArray(output?.chunks) && output.chunks.length > 0) {
+    for (const chunk of output.chunks) {
+      const timestamp = Array.isArray(chunk.timestamp) ? chunk.timestamp : [];
+      addTimedText(chunk.text, timestamp[0], timestamp[1]);
+    }
+    return words;
   }
+
+  // Some Whisper responses return individual word objects.
+  if (Array.isArray(output?.words) && output.words.length > 0) {
+    for (const item of output.words) {
+      const text = String(item.word ?? item.text ?? "").trim();
+      if (!text) continue;
+      words.push({
+        word: text,
+        start: Number(item.start ?? item.timestamp?.[0] ?? 0),
+        end: Number(item.end ?? item.timestamp?.[1] ?? item.start ?? 0),
+      });
+    }
+    return words;
+  }
+
+  // Fallback for regular segment responses.
+  const segments: any[] = Array.isArray(output?.segments) ? output.segments : [];
+  for (const segment of segments) {
+    const timestamp = Array.isArray(segment.timestamp) ? segment.timestamp : [];
+    addTimedText(
+      segment.text,
+      segment.start ?? timestamp[0],
+      segment.end ?? timestamp[1]
+    );
+  }
+
+  // Final fallback when the model returns only plain text.
+  if (words.length === 0) {
+    const text = String(output?.text ?? output ?? "").trim();
+    addTimedText(text, 0, 0);
+  }
+
   return words;
 }
 
