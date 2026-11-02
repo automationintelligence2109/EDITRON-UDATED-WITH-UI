@@ -194,6 +194,7 @@ export async function POST(req: NextRequest) {
     }
 
     processedVideoPath = cutResult.output_path;
+    logTiming("cut engine finished", startedAt);
 
     // --- STEP 2: EXTRACT 16kHz MONO AUDIO ---
     audioPath = join(tempDir, `${tempId}.wav`);
@@ -203,11 +204,13 @@ export async function POST(req: NextRequest) {
       console.error("[Audio] FFmpeg error:", err?.stderr || err?.message || err);
       throw new Error("Could not extract audio from the video.");
     });
+    logTiming("audio extracted", startedAt);
 
     // --- STEP 3: TRANSCRIPTION (Replicate) ---
     // Read the processed local audio binary file and transform it into a base64 network data URI
     const audioBuffer = await readFile(audioPath);
     const base64Audio = `data:audio/wav;base64,${audioBuffer.toString("base64")}`;
+    logTiming(`audio prepared (${Math.round(audioBuffer.length / 1024)} KB)`, startedAt);
 
     const inputInput: Record<string, unknown> = {
       // This model expects the uploaded media in the `url` input.
@@ -242,6 +245,7 @@ export async function POST(req: NextRequest) {
       output = await replicate.run(replicateModelVersion, {
         input: inputInput,
       });
+      logTiming("Replicate finished", startedAt);
     } catch (replicateError: any) {
       const detail = replicateError?.message || String(replicateError);
       console.error("[Replicate] Error:", detail);
@@ -275,6 +279,7 @@ export async function POST(req: NextRequest) {
         ContentType: "video/mp4",
       })
     );
+    logTiming("R2 upload finished", startedAt);
 
     const tightenedVideoUrl = await getSignedUrl(
       r2Client,
