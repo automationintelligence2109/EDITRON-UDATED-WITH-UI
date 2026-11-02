@@ -11,6 +11,7 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  DeleteObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -211,13 +212,36 @@ export async function POST(req: NextRequest) {
     logTiming("audio extracted", startedAt);
 
     // --- STEP 3: TRANSCRIPTION (Replicate) ---
-    // Read the processed local audio binary file and transform it into a base64 network data URI
+    // Upload the extracted WAV to R2 and give Replicate a signed URL.
+    // This avoids putting the entire audio file into a large Base64 request.
     const audioBuffer = await readFile(audioPath);
-    const base64Audio = `data:audio/wav;base64,${audioBuffer.toString("base64")}`;
+    const audioR2 = getR2Client();
+    audioR2Client = audioR2.client;
+    audioR2Bucket = audioR2.bucket;
+    audioObjectKey = `transcription-input/${randomUUID()}.wav`;
+
+    await audioR2Client.send(
+      new PutObjectCommand({
+        Bucket: audioR2Bucket,
+        Key: audioObjectKey,
+        Body: audioBuffer,
+        ContentType: "audio/wav",
+      })
+    );
+
+    const audioUrl = await getSignedUrl(
+      audioR2Client,
+      new GetObjectCommand({
+        Bucket: audioR2Bucket,
+        Key: audioObjectKey,
+      }),
+      { expiresIn: 900 }
+    );
+    logTiming(`audio uploaded to R2 (${Math.round(audioBuffer.length / 1024)} KB)`, startedAt);
 
     const inputInput: Record<string, unknown> = {
-      // This model expects the uploaded media in the `url` input.
-      url: base64Audio,
+      // This model expects the media URL in the `url` input.
+      url: audioUrl,
       task: mode,
       // The model's chunk timestamps are returned as [start, end] arrays.
       // Word mode causes this model to fail internally with a tuple error.
@@ -316,6 +340,17 @@ export async function POST(req: NextRequest) {
       if (p) await unlink(p).catch(() => {});
     }
     if (cutOutputDir) await rm(cutOutputDir, { recursive: true, force: true }).catch(() => {});
+
+    if (audioObjectKey && audioR2Client && audioR2Bucket) {
+      await audioR2Client.send(
+        new DeleteObjectCommand({
+          Bucket: audioR2Bucket,
+          Key: audioObjectKey,
+        })
+      ).catch((error) => {
+        console.error("[R2] Could not delete temporary audio:", error);
+      });
+    }
   }
 }
 
