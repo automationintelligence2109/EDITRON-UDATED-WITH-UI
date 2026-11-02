@@ -335,7 +335,9 @@ export function CaptionStudio() {
       }
 
       if (data.tightenedVideoUrl) {
-        setVideoUrl(`/api/video?path=${encodeURIComponent(data.tightenedVideoUrl)}`);
+        // tightenedVideoUrl is already a signed Cloudflare R2 URL.
+        // Do not send it through /api/video, which expects a local file path.
+        setVideoUrl(data.tightenedVideoUrl);
       }
 
       setStage("timing");
@@ -1018,7 +1020,7 @@ export function CaptionStudio() {
             Caption a video <span className="capgen-gradient-text">right now</span>
           </h2>
           <p className="mx-auto mt-3 max-w-2xl text-base text-muted-foreground">
-            Upload a clip, pick a language, hit generate. Edit word timings, style the captions, export SRT — all in your browser.
+            Upload a clip, pick a language, hit generate. Edit word timings, style the captions, export SRT - all in your browser.
           </p>
         </div>
 
@@ -1131,7 +1133,7 @@ export function CaptionStudio() {
                 <span className={cn("font-medium", stage === "error" ? "text-red-600" : "text-white")}>
                   {STAGE_LABELS[stage]}
                 </span>
-                {errorMsg && <span className="text-red-500">— {errorMsg}</span>}
+                {errorMsg && <span className="text-red-500"> - {errorMsg}</span>}
                 {stage === "done" && segments.length > 0 && (
                   <span className="ml-auto text-muted-foreground">
                     {segments.length} segments · {segments.reduce((a, s) => a + s.text.split(/\\s+/).length, 0)} words
@@ -1320,7 +1322,7 @@ export function CaptionStudio() {
                       </Button>
                     </div>
                     <p className="mt-4 text-xs text-muted-foreground">
-                      Audio is processed locally — only the bytes are sent to /api/transcribe for ASR.
+                      Audio is processed locally - only the bytes are sent to /api/transcribe for ASR.
                     </p>
                   </div>
                 </div>
