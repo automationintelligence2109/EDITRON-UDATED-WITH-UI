@@ -7,6 +7,12 @@ import { randomUUID } from "crypto";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import Replicate from "replicate";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +30,28 @@ type WhisperCaption = { start: number; end: number; text: string };
 // Never hardcode the token or model version in this file.
 // Replicate is initialized inside POST so Next.js can build this route
 // even when runtime environment variables are not available during the build.
+
+function getR2Client() {
+  const endpoint = process.env.R2_ENDPOINT;
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+  const bucket = process.env.R2_BUCKET_NAME;
+
+  if (!endpoint || !accessKeyId || !secretAccessKey || !bucket) {
+    throw new Error("Cloudflare R2 environment variables are not configured.");
+  }
+
+  const client = new S3Client({
+    region: "auto",
+    endpoint,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
+  });
+
+  return { client, bucket };
+}
 
 /**
  * Turns whatever shape the Replicate Whisper model returns into a flat word list.
@@ -94,6 +122,7 @@ export async function POST(req: NextRequest) {
   let tempPath: string | null = null;
   let cutOutputDir: string | null = null;
   let audioPath: string | null = null;
+  let processedVideoPath: string | null = null;
 
   try {
     const formData = await req.formData();
@@ -143,12 +172,12 @@ export async function POST(req: NextRequest) {
       throw new Error(cutResult.error || "AI Cut Engine failed.");
     }
 
-    const tightenedPath: string = cutResult.output_path;
+    processedVideoPath = cutResult.output_path;
 
     // --- STEP 2: EXTRACT 16kHz MONO AUDIO ---
     audioPath = join(tempDir, `${tempId}.wav`);
     await execFileAsync(FFMPEG, [
-      "-y", "-i", tightenedPath, "-vn", "-ac", "1", "-ar", "16000", audioPath,
+      "-y", "-i", processedVideoPath, "-vn", "-ac", "1", "-ar", "16000", audioPath,
     ], { maxBuffer: 10 * 1024 * 1024 }).catch((err) => {
       console.error("[Audio] FFmpeg error:", err?.stderr || err?.message || err);
       throw new Error("Could not extract audio from the video.");
@@ -213,13 +242,36 @@ export async function POST(req: NextRequest) {
       text: c.text,
     }));
 
+    const { client: r2Client, bucket: r2Bucket } = getR2Client();
+    const processedVideoBuffer = await readFile(processedVideoPath);
+    const videoKey = `processed/${randomUUID()}.mp4`;
+
+    await r2Client.send(
+      new PutObjectCommand({
+        Bucket: r2Bucket,
+        Key: videoKey,
+        Body: processedVideoBuffer,
+        ContentType: "video/mp4",
+      })
+    );
+
+    const tightenedVideoUrl = await getSignedUrl(
+      r2Client,
+      new GetObjectCommand({
+        Bucket: r2Bucket,
+        Key: videoKey,
+      }),
+      { expiresIn: 3600 }
+    );
+
     return NextResponse.json({
       success: true,
       captions,
+      segments: captions,
       language: output?.detected_language || output?.language || language,
       captionCount: captions.length,
       mode,
-      tightenedVideoUrl: tightenedPath, 
+      tightenedVideoUrl,
       elapsedMs: Date.now() - startedAt,
     });
   } catch (err: unknown) {
@@ -230,8 +282,8 @@ export async function POST(req: NextRequest) {
       { status: 500 }
     );
   } finally {
-    // Clean up temp files so the VPS disk doesn't fill up
-    for (const p of [tempPath, audioPath]) {
+    // Clean up temp files so the VPS disk doesn't fill up.
+    for (const p of [tempPath, audioPath, processedVideoPath]) {
       if (p) await unlink(p).catch(() => {});
     }
     if (cutOutputDir) await rm(cutOutputDir, { recursive: true, force: true }).catch(() => {});
