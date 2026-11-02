@@ -149,6 +149,9 @@ export async function POST(req: NextRequest) {
   let cutOutputDir: string | null = null;
   let audioPath: string | null = null;
   let processedVideoPath: string | null = null;
+  let audioObjectKey: string | null = null;
+  let audioR2Client: S3Client | null = null;
+  let audioR2Bucket: string | null = null;
 
   try {
     const formData = await req.formData();
