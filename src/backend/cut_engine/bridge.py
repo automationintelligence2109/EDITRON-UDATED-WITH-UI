@@ -15,14 +15,6 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-# Import the new High-Quality Audio Enhancer
-try:
-    from mini_services.hyper_engine.audio_enhancer import AudioEnhancer
-except ImportError:
-    try:
-        from hyper_engine.audio_enhancer import AudioEnhancer
-    except ImportError:
-        AudioEnhancer = None
 
 from audio import extract_wav_16k_mono, probe_duration
 from silence import detect_silences
