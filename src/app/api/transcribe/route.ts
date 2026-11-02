@@ -53,6 +53,10 @@ function getR2Client() {
   return { client, bucket };
 }
 
+function logTiming(label: string, startedAt: number) {
+  console.log(`[Transcribe] ${label}: ${Date.now() - startedAt} ms`);
+}
+
 /**
  * Turns Replicate's chunk, word, or segment output into individual words.
  * The video Whisper model returns chunks whose `text` can contain many words.
@@ -210,7 +214,6 @@ export async function POST(req: NextRequest) {
     // Read the processed local audio binary file and transform it into a base64 network data URI
     const audioBuffer = await readFile(audioPath);
     const base64Audio = `data:audio/wav;base64,${audioBuffer.toString("base64")}`;
-    logTiming(`audio prepared (${Math.round(audioBuffer.length / 1024)} KB)`, startedAt);
 
     const inputInput: Record<string, unknown> = {
       // This model expects the uploaded media in the `url` input.
