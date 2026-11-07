@@ -1,5 +1,4 @@
 import os
-import subprocess
 import json
 import sys
 import time
@@ -33,13 +32,19 @@ def process_video(
     speed: float = 1.0,
     brolls: list = None,
 ):
-    """Run the Cut Engine and log the duration of every internal stage."""
+    """Run the Cut Engine and return timings for every internal stage."""
 
     started_at = time.perf_counter()
+    timings = {}
 
     def mark(stage: str):
         elapsed_ms = (time.perf_counter() - started_at) * 1000
-        print(f"[CutEngine] {stage}: {elapsed_ms:.0f} ms", flush=True)
+        timings[stage] = round(elapsed_ms)
+        print(
+            f"[CutEngine] {stage}: {elapsed_ms:.0f} ms",
+            file=sys.stderr,
+            flush=True,
+        )
 
     try:
         # 0. Verify FFmpeg and FFprobe
@@ -67,8 +72,7 @@ def process_video(
         mark(f"duration probe finished ({duration:.2f}s)")
 
         # 3. Use the extracted WAV directly.
-        # AudioEnhancer, DeepFilterNet, librosa,
-        # noisereduce, and soundfile are not used.
+        # AudioEnhancer and DeepFilterNet are not used.
         audio_for_detection = Path(audio_path)
 
         # 4. Detect silence with FFmpeg
@@ -122,6 +126,7 @@ def process_video(
         return {
             "success": True,
             "output_path": output_video_path,
+            "timings": timings,
             "cut_plan": {
                 "source": cut_plan.source,
                 "duration": cut_plan.duration,
@@ -140,10 +145,15 @@ def process_video(
         }
 
     except Exception as error:
-        print(f"[CutEngine] failed: {error}", flush=True)
+        print(
+            f"[CutEngine] failed: {error}",
+            file=sys.stderr,
+            flush=True,
+        )
         return {
             "success": False,
             "error": str(error),
+            "timings": timings,
         }
 
 
