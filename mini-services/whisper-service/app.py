@@ -222,4 +222,4 @@ def download(srt_id):
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=False)
+    app.run(host="0.0.0.0", port=PORT, debug=False, threaded=True)
