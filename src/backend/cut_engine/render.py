@@ -1,9 +1,9 @@
-"""FFmpeg render: speed -> cut -> fade -> audio chain."""
+"""ffmpeg render: speed → cut → fade → audio chain."""
 from __future__ import annotations
 
-import random
 import subprocess
 import sys
+import random
 from pathlib import Path
 
 
@@ -28,17 +28,12 @@ def render(
     audio_src: Path | None = None,
     brolls: list[dict] | None = None,
 ) -> float:
-    """Render the edited video using a faster CPU encoding preset."""
-
-    transition_dir = Path(
+    TRANSITIONS_DIR = Path(
         r"C:\Users\Rishika\Downloads\Sargam Transition Part-2-20261007T144710Z-1-001\Sargam Transition Part-2"
     )
-    transition_files = []
-
-    # Only scan for transitions when B-rolls are actually being used.
-    if brolls:
-        transition_files = list(transition_dir.glob("*.mov"))
-        transition_files += list(transition_dir.glob("*.mp4"))
+    transition_files = list(TRANSITIONS_DIR.glob("*.mov")) + list(
+        TRANSITIONS_DIR.glob("*.mp4")
+    )
 
     inputs = [str(src)]
 
@@ -51,42 +46,40 @@ def render(
         for broll in brolls:
             src_path = broll.get("src")
 
-            if not src_path:
-                continue
+            if src_path:
+                inputs.append(src_path)
+                broll_idx = len(inputs) - 1
 
-            inputs.append(src_path)
-            broll_idx = len(inputs) - 1
+                t_in_path = (
+                    random.choice(transition_files)
+                    if transition_files
+                    else None
+                )
+                t_out_path = (
+                    random.choice(transition_files)
+                    if transition_files
+                    else None
+                )
 
-            t_in_path = (
-                random.choice(transition_files)
-                if transition_files
-                else None
-            )
-            t_out_path = (
-                random.choice(transition_files)
-                if transition_files
-                else None
-            )
+                t_in_idx = None
+                if t_in_path:
+                    inputs.append(str(t_in_path))
+                    t_in_idx = len(inputs) - 1
 
-            t_in_idx = None
-            if t_in_path:
-                inputs.append(str(t_in_path))
-                t_in_idx = len(inputs) - 1
+                t_out_idx = None
+                if t_out_path:
+                    inputs.append(str(t_out_path))
+                    t_out_idx = len(inputs) - 1
 
-            t_out_idx = None
-            if t_out_path:
-                inputs.append(str(t_out_path))
-                t_out_idx = len(inputs) - 1
-
-            broll_data_map.append(
-                {
-                    "clip_idx": broll_idx,
-                    "t_in_idx": t_in_idx,
-                    "t_out_idx": t_out_idx,
-                    "start": broll.get("start", 0),
-                    "end": broll.get("end", 0),
-                }
-            )
+                broll_data_map.append(
+                    {
+                        "clip_idx": broll_idx,
+                        "t_in_idx": t_in_idx,
+                        "t_out_idx": t_out_idx,
+                        "start": broll.get("start", 0),
+                        "end": broll.get("end", 0),
+                    }
+                )
 
     parts: list[str] = []
     n = len(keep)
@@ -117,99 +110,97 @@ def render(
 
     labels: list[str] = []
 
-    for i, (start, end) in enumerate(keep):
-        duration = end - start
-        fade_duration = min(fade, duration / 3)
+    for i, (s, e) in enumerate(keep):
+        dur = e - s
+        fd = min(fade, dur / 3)
 
         parts.append(
-            f"[vs{i}]trim=start={start:.3f}:end={end:.3f},"
+            f"[vs{i}]trim=start={s:.3f}:end={e:.3f},"
             f"setpts=PTS-STARTPTS[v{i}]"
         )
 
         parts.append(
-            f"[as{i}]atrim=start={start:.3f}:end={end:.3f},"
+            f"[as{i}]atrim=start={s:.3f}:end={e:.3f},"
             f"asetpts=PTS-STARTPTS,"
-            f"afade=t=in:curve=tri:st=0:d={fade_duration:.3f},"
-            f"afade=t=out:curve=tri:"
-            f"st={duration - fade_duration:.3f}:"
-            f"d={fade_duration:.3f}[a{i}]"
+            f"afade=t=in:curve=tri:st=0:d={fd:.3f},"
+            f"afade=t=out:curve=tri:st={dur-fd:.3f}:d={fd:.3f}[a{i}]"
         )
 
         labels.append(f"[v{i}][a{i}]")
 
     concat = "".join(labels) + f"concat=n={n}:v=1:a=1[vc][ac]"
-    filter_complex = ";".join(parts + [concat])
 
-    current_video = "[vc]"
+    current_v = "[vc]"
 
     if broll_data_map:
         overlay_filters = []
-        video_stream = "[vc]"
+        v_stream = "[vc]"
 
-        for i, broll in enumerate(broll_data_map):
+        for i, b in enumerate(broll_data_map):
             overlay_filters.append(
-                f"[{video_stream}][{broll['clip_idx']}:v]"
-                f"overlay=enable='between(t,{broll['start']},{broll['end']})'"
+                f"[{v_stream}][{b['clip_idx']}:v]"
+                f"overlay=enable='between(t,{b['start']},{b['end']})'"
                 f"[v_br{i}]"
             )
-            video_stream = f"[v_br{i}]"
+            v_stream = f"[v_br{i}]"
 
-            if broll["t_in_idx"] is not None:
+            if b["t_in_idx"] is not None:
                 overlay_filters.append(
-                    f"[{video_stream}][{broll['t_in_idx']}:v]"
-                    f"overlay=enable='between(t,{broll['start']},"
-                    f"{broll['start'] + 0.5})'[v_ti{i}]"
+                    f"[{v_stream}][{b['t_in_idx']}:v]"
+                    f"overlay=enable='between(t,{b['start']},{b['start'] + 0.5})'"
+                    f"[v_ti{i}]"
                 )
-                video_stream = f"[v_ti{i}]"
+                v_stream = f"[v_ti{i}]"
 
-            if broll["t_out_idx"] is not None:
+            if b["t_out_idx"] is not None:
                 overlay_filters.append(
-                    f"[{video_stream}][{broll['t_out_idx']}:v]"
-                    f"overlay=enable='between(t,{broll['end'] - 0.5},"
-                    f"{broll['end']})'[v_to{i}]"
+                    f"[{v_stream}][{b['t_out_idx']}:v]"
+                    f"overlay=enable='between(t,{b['end'] - 0.5},{b['end']})'"
+                    f"[v_to{i}]"
                 )
-                video_stream = f"[v_to{i}]"
+                v_stream = f"[v_to{i}]"
 
+        filter_complex = ";".join(parts + [concat])
         filter_complex += ";" + ";".join(overlay_filters)
-        current_video = video_stream
+        current_v = v_stream
+    else:
+        filter_complex = ";".join(parts + [concat])
 
-    audio_chain = [f"{current_video}null[vout]"]
-    del audio_chain
-
-    audio_parts = [f"[ac]highpass=f={highpass_hz}"]
+    audio_chain_parts = [f"[ac]highpass=f={highpass_hz}"]
 
     if compressor_ratio > 1.0:
-        audio_parts.append(
+        audio_chain_parts.append(
             f"acompressor=threshold={compressor_threshold_db}dB:"
             f"ratio={compressor_ratio}:attack=10:release=200:makeup=2"
         )
 
     if deess_db < 0:
-        audio_parts.append(
+        audio_chain_parts.append(
             f"equalizer=f=6500:t=q:w=3:g={deess_db}"
         )
 
-    audio_parts.append(
+    audio_chain_parts.append(
         f"loudnorm=I={loudnorm_i}:TP={loudnorm_tp}:LRA=11"
     )
-    audio_parts.append("[aout]")
-
-    filter_complex += ";" + ",".join(audio_parts)
+    audio_post = ",".join(audio_chain_parts) + "[aout]"
 
     if subtitles_path:
-        subtitle_value = str(subtitles_path).replace("\\", "/")
-        subtitle_value = subtitle_value.replace(":", r"\:")
-        filter_complex += (
-            f";{current_video}subtitles='{subtitle_value}'"
-            ":force_style='Alignment=2,Fontname=Arial,"
-            "Fontsize=18,PrimaryColour=&H00FFFF,"
-            "OutlineColour=&H00000000,BorderStyle=3'[vout]"
+        path_str = str(subtitles_path).replace("\\", "/")
+        path_str = path_str.replace(":", ":\\")
+        sub_filter = (
+            f"subtitles='{path_str}:force_style="
+            "'Alignment=2,Fontname=Arial,Fontsize=18,"
+            "PrimaryColour=&H00FFFF,OutlineColour=&H00000000,"
+            "BorderStyle=3'"
         )
+        filter_complex += f";{current_v}{sub_filter}[vout]"
         video_map = "[vout]"
     else:
-        video_map = current_video
+        video_map = current_v
 
-    command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+    filter_complex += f";{audio_post}"
+
+    command = [ffmpeg, "-y", "-hide_banner"]
 
     for input_file in inputs:
         command.extend(["-i", input_file])
@@ -249,12 +240,13 @@ def render(
 
     if result.returncode != 0:
         sys.stderr.write(result.stderr[-4000:])
-        raise RuntimeError("ffmpeg render failed")
+        raise RuntimeError(
+            "ffmpeg render failed: " + result.stderr[-1500:]
+        )
 
-    ffprobe = ffmpeg.replace("ffmpeg", "ffprobe")
     output_duration = subprocess.check_output(
         [
-            ffprobe,
+            ffmpeg.replace("ffmpeg", "ffprobe"),
             "-v",
             "error",
             "-show_entries",
