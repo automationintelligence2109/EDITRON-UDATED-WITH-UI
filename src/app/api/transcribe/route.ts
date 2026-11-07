@@ -85,7 +85,7 @@ function toWords(output: any): WordItem[] {
     });
   };
 
-  // Turian's model returns chunks like:
+  // Whisper responses may return chunks like:
   // { text: "many words here", timestamp: [start, end] }
   if (Array.isArray(output?.chunks) && output.chunks.length > 0) {
     for (const chunk of output.chunks) {
@@ -244,16 +244,20 @@ export async function POST(req: NextRequest) {
 
     const inputInput: Record<string, unknown> = {
       // This model expects the media URL in the `url` input.
-      url: audioUrl,
-      task: mode,
+      audio: audioUrl,
+      
+      translate: false,
+      transcription: "plain text",
+      temperature: 0,
+      condition_on_previous_text: true,
       // The model's chunk timestamps are returned as [start, end] arrays.
       // Word mode causes this model to fail internally with a tuple error.
-      timestamp: "chunk",
+      
     };
     // Leave language unset so the Replicate model detects it automatically.
     // Regional browser values such as "en-in" are not accepted by this model.
-    inputInput.batch_size = 24;
-    inputInput.diarise_audio = false;
+    
+    
 
     // The complete Replicate model version is supplied through Dokploy.
     const replicateToken = process.env.REPLICATE_API_TOKEN;
