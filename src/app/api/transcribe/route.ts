@@ -242,11 +242,14 @@ export async function POST(req: NextRequest) {
     // --- STEP 3: TRANSCRIPTION (Replicate) ---
     // Upload the extracted WAV to R2 and give Replicate a signed URL.
     // This avoids putting the entire audio file into a large Base64 request.
+    const audioR2StartedAt = Date.now();
     const audioBuffer = await readFile(audioPath);
+    logTiming(`audio file read (${Math.round(audioBuffer.length / 1024)} KB)`, audioR2StartedAt);
     const audioR2 = getR2Client();
     audioR2Client = audioR2.client;
     audioR2Bucket = audioR2.bucket;
     audioObjectKey = `transcription-input/${randomUUID()}.wav`;
+    const r2UploadStartedAt = Date.now();
 
     await audioR2Client.send(
       new PutObjectCommand({
@@ -257,6 +260,7 @@ export async function POST(req: NextRequest) {
       })
     );
 
+    const signedUrlStartedAt = Date.now();
     const audioUrl = await getSignedUrl(
       audioR2Client,
       new GetObjectCommand({
@@ -265,7 +269,8 @@ export async function POST(req: NextRequest) {
       }),
       { expiresIn: 900 }
     );
-    logTiming(`audio uploaded to R2 (${Math.round(audioBuffer.length / 1024)} KB)`, startedAt);
+    
+    logTiming("signed audio URL created", signedUrlStartedAt);
 
     const inputInput: Record<string, unknown> = {
       // This model expects the media URL in the `url` input.
