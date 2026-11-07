@@ -475,7 +475,6 @@ export function CaptionStudio() {
           data?.error || `B-roll request failed with status ${res.status}`
         );
       }
-      const data = await res.json();
 
       if (!data.success || !data.results || data.results.length === 0) {
         toast({ title: "No clips found", description: `Could not find B-roll for "${text}"`, variant: "destructive" });
@@ -513,7 +512,8 @@ export function CaptionStudio() {
 
       toast({ title: "B-roll added", description: `Added clip for "${text}"` });
     } catch (e) {
-      console.error("Direct B-roll error:", e);
+      const message = e instanceof Error ? e.message : "Unknown B-roll error";
+      console.error("Direct B-roll error:", message);
       toast({ title: "Error", description: message, variant: "destructive" });
     }
   };
