@@ -220,13 +220,24 @@ export async function POST(req: NextRequest) {
 
     // --- STEP 2: EXTRACT 16kHz MONO AUDIO ---
     audioPath = join(tempDir, `${tempId}.wav`);
+    const audioStartedAt = Date.now();
     await execFileAsync(FFMPEG, [
-      "-y", "-i", processedVideoPath, "-vn", "-ac", "1", "-ar", "16000", audioPath,
+      "-y",
+      "-hide_banner",
+      "-loglevel", "error",
+      "-i", processedVideoPath,
+      "-map", "0:a:0",
+      "-vn",
+      "-sn",
+      "-c:a", "pcm_s16le",
+      "-ac", "1",
+      "-ar", "16000",
+      audioPath,
     ], { maxBuffer: 10 * 1024 * 1024 }).catch((err) => {
       console.error("[Audio] FFmpeg error:", err?.stderr || err?.message || err);
       throw new Error("Could not extract audio from the video.");
     });
-    logTiming("audio extracted", startedAt);
+    logTiming("audio extracted", audioStartedAt);
 
     // --- STEP 3: TRANSCRIPTION (Replicate) ---
     // Upload the extracted WAV to R2 and give Replicate a signed URL.
