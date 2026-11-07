@@ -182,7 +182,9 @@ export async function POST(req: NextRequest) {
     const cutBridgePath = join(process.cwd(), "src", "backend", "cut_engine", "bridge.py");
     cutOutputDir = join(tempDir, tempId);
 
-    const { stdout: cutStdout } = await execFileAsync(
+    const cutStartedAt = Date.now();
+
+    const { stdout: cutStdout, stderr: cutStderr } = await execFileAsync(
       PYTHON_BIN,
       [cutBridgePath, tempPath, cutOutputDir],
       { env: { ...process.env, PYTHONUNBUFFERED: "1" }, maxBuffer: 10 * 1024 * 1024 }
@@ -202,7 +204,19 @@ export async function POST(req: NextRequest) {
     }
 
     processedVideoPath = cutResult.output_path;
-    logTiming("cut engine finished", startedAt);
+    if (cutStderr?.trim()) {
+      console.log("[CutEngine stderr]");
+      console.log(cutStderr.trim());
+    }
+
+    if (cutResult.timings) {
+      console.log(
+        "[CutEngine timings]",
+        JSON.stringify(cutResult.timings)
+      );
+    }
+
+    logTiming("cut engine finished", cutStartedAt);
 
     // --- STEP 2: EXTRACT 16kHz MONO AUDIO ---
     audioPath = join(tempDir, `${tempId}.wav`);
@@ -246,7 +260,7 @@ export async function POST(req: NextRequest) {
       // This model expects the media URL in the `url` input.
       audio: audioUrl,
       
-      translate: false,
+      translate: mode === "translate",
       transcription: "plain text",
       temperature: 0,
       condition_on_previous_text: true,
