@@ -2,6 +2,7 @@ import os
 import subprocess
 import json
 import sys
+import time
 from pathlib import Path
 
 # Add the project root to sys.path
@@ -32,23 +33,23 @@ def process_video(
     speed: float = 1.0,
     brolls: list = None,
 ):
-    """
-    Main entry point for the Cut Engine.
+    """Run the Cut Engine and log the duration of every internal stage."""
 
-    Extracts audio with FFmpeg, detects silence with FFmpeg,
-    builds a cut plan, and renders the tightened video.
-    """
+    started_at = time.perf_counter()
+
+    def mark(stage: str):
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        print(f"[CutEngine] {stage}: {elapsed_ms:.0f} ms", flush=True)
 
     try:
         # 0. Verify FFmpeg and FFprobe
         ffmpeg_bin, ffprobe_bin = check_ffmpeg()
+        mark("ffmpeg check finished")
 
         # 1. Setup workspace
         stem, _ = os.path.splitext(os.path.basename(input_path))
-
         work_dir = os.path.join(output_dir, stem, ".work")
         os.makedirs(work_dir, exist_ok=True)
-
         audio_path = os.path.join(work_dir, "audio_16k.wav")
 
         # 2. Extract audio with FFmpeg
@@ -57,36 +58,27 @@ def process_video(
             Path(input_path),
             Path(audio_path),
         )
+        mark("audio extraction finished")
 
         duration = probe_duration(
             ffprobe_bin,
             Path(input_path),
         )
-
-        print(f"[Audit] Raw audio extracted to: {audio_path}")
+        mark(f"duration probe finished ({duration:.2f}s)")
 
         # 3. Use the extracted WAV directly.
         # AudioEnhancer, DeepFilterNet, librosa,
         # noisereduce, and soundfile are not used.
         audio_for_detection = Path(audio_path)
 
-        print(
-            f"[Audit] Using raw audio for silence detection: "
-            f"{audio_for_detection}"
-        )
-
         # 4. Detect silence with FFmpeg
-        print(
-            f"[Audit] Detecting silences in "
-            f"{audio_for_detection}..."
-        )
-
         silences_fine = detect_silences(
             audio_for_detection,
             ffmpeg_bin,
             noise_db=-40.0,
             min_dur=0.15,
         )
+        mark(f"fine silence detection finished ({len(silences_fine)} silences)")
 
         silences_coarse = detect_silences(
             audio_for_detection,
@@ -94,11 +86,7 @@ def process_video(
             noise_db=-35.0,
             min_dur=0.25,
         )
-
-        print(
-            f"[Audit] Found {len(silences_fine)} fine silences "
-            f"and {len(silences_coarse)} coarse silences."
-        )
+        mark(f"coarse silence detection finished ({len(silences_coarse)} silences)")
 
         # 5. Build the cut plan
         cut_plan = build_plan(
@@ -110,6 +98,7 @@ def process_video(
             language="en",
             cut_fillers=False,
         )
+        mark("cut plan finished")
 
         # 6. Render the tightened video
         output_video_path = os.path.join(
@@ -117,11 +106,7 @@ def process_video(
             stem,
             f"{stem}_cut.mp4",
         )
-
-        os.makedirs(
-            os.path.dirname(output_video_path),
-            exist_ok=True,
-        )
+        os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
 
         render(
             ffmpeg=ffmpeg_bin,
@@ -132,6 +117,7 @@ def process_video(
             audio_src=None,
             brolls=brolls,
         )
+        mark("video render finished")
 
         return {
             "success": True,
@@ -154,6 +140,7 @@ def process_video(
         }
 
     except Exception as error:
+        print(f"[CutEngine] failed: {error}", flush=True)
         return {
             "success": False,
             "error": str(error),
@@ -162,10 +149,7 @@ def process_video(
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print(
-            "Usage: python bridge.py "
-            "<input_path> <output_dir>"
-        )
+        print("Usage: python bridge.py <input_path> <output_dir>")
         sys.exit(1)
 
     brolls_data = None
