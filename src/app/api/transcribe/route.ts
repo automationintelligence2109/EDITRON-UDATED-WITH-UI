@@ -260,6 +260,8 @@ export async function POST(req: NextRequest) {
       })
     );
 
+    logTiming("temporary audio R2 upload finished", r2UploadStartedAt);
+
     const signedUrlStartedAt = Date.now();
     const audioUrl = await getSignedUrl(
       audioR2Client,
@@ -273,7 +275,7 @@ export async function POST(req: NextRequest) {
     logTiming("signed audio URL created", signedUrlStartedAt);
 
     const inputInput: Record<string, unknown> = {
-      // This model expects the media URL in the `url` input.
+      // OpenAI Whisper expects the media URL in the `audio` input.
       audio: audioUrl,
       
       translate: mode === "translate",
@@ -305,11 +307,12 @@ export async function POST(req: NextRequest) {
 
     // Example format: owner/model:version-id
     let output: any;
+    const replicateStartedAt = Date.now();
     try {
       output = await replicate.run(replicateModelVersion, {
         input: inputInput,
       });
-      logTiming("Replicate finished", startedAt);
+      logTiming("Replicate finished", replicateStartedAt);
     } catch (replicateError: any) {
       const detail = replicateError?.message || String(replicateError);
       console.error("[Replicate] Error:", detail);
