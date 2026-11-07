@@ -468,7 +468,13 @@ export function CaptionStudio() {
         }),
       });
 
-      if (!res.ok) throw new Error("Failed to fetch B-roll");
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok || !data?.success) {
+        throw new Error(
+          data?.error || `B-roll request failed with status ${res.status}`
+        );
+      }
       const data = await res.json();
 
       if (!data.success || !data.results || data.results.length === 0) {
@@ -508,7 +514,7 @@ export function CaptionStudio() {
       toast({ title: "B-roll added", description: `Added clip for "${text}"` });
     } catch (e) {
       console.error("Direct B-roll error:", e);
-      toast({ title: "Error", description: "Failed to add B-roll automatically.", variant: "destructive" });
+      toast({ title: "Error", description: message, variant: "destructive" });
     }
   };
 
