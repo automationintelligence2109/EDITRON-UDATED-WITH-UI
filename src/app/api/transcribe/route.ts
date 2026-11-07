@@ -335,7 +335,13 @@ export async function POST(req: NextRequest) {
     }));
 
     const { client: r2Client, bucket: r2Bucket } = getR2Client();
+    const finalR2StartedAt = Date.now();
     const processedVideoBuffer = await readFile(processedVideoPath);
+    console.log(
+      `[Transcribe] final video size: ${Math.round(
+        processedVideoBuffer.length / 1024 / 1024
+      )} MB`
+    );
     const videoKey = `processed/${randomUUID()}.mp4`;
 
     await r2Client.send(
@@ -346,7 +352,7 @@ export async function POST(req: NextRequest) {
         ContentType: "video/mp4",
       })
     );
-    logTiming("R2 upload finished", startedAt);
+    logTiming("final R2 upload finished", finalR2StartedAt);
 
     const tightenedVideoUrl = await getSignedUrl(
       r2Client,
