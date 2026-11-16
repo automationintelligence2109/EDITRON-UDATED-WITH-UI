@@ -3,6 +3,7 @@
 // stock-footage-friendly search query for each window.
 
 import { BROLL_CONFIG } from "./broll-config";
+import type { CaptionSegment } from "./captions";
 
 export type BRollClip = {
   id: string; // unique per assignment (windowId + clipId)
@@ -12,12 +13,16 @@ export type BRollClip = {
   source: "pexels" | "pixabay" | "user";
   previewUrl: string; // direct playable mp4 URL
   thumbnail: string;
+  sourceKey?: string;
+  thumbnailKey?: string;
+  mediaType?: "video" | "image";
   query: string;
   durationHint?: number; // source clip's own duration, for info only
   trimStart?: number; // offset in seconds
   trimEnd?: number; // offset in seconds
   transitionIn?: string;
   transitionOut?: string;
+  transitionOrder?: number;
 };
 
 export type BRollWindow = {
@@ -27,6 +32,72 @@ export type BRollWindow = {
   text: string;
   query: string;
 };
+
+export type BRollSearchClip = {
+  id: string;
+  source: "pexels" | "pixabay";
+  previewUrl: string;
+  thumbnail: string;
+  durationHint?: number;
+};
+
+export type BRollSearchResult = {
+  windowId: string;
+  start: number;
+  end: number;
+  query: string;
+  clips: BRollSearchClip[];
+};
+
+export function chunkBrollWindows<T>(windows: T[], size = BROLL_CONFIG.MAX_SEARCH_WINDOWS_PER_REQUEST): T[][] {
+  const chunkSize = Number.isSafeInteger(size) && size > 0
+    ? size
+    : BROLL_CONFIG.MAX_SEARCH_WINDOWS_PER_REQUEST;
+  const batches: T[][] = [];
+  for (let index = 0; index < windows.length; index += chunkSize) {
+    batches.push(windows.slice(index, index + chunkSize));
+  }
+  return batches;
+}
+
+export function limitBrollWindows<T>(
+  windows: T[],
+  limit = BROLL_CONFIG.MAX_SEARCH_WINDOWS_PER_VIDEO,
+): T[] {
+  const maxWindows = Number.isSafeInteger(limit) && limit > 0
+    ? limit
+    : BROLL_CONFIG.MAX_SEARCH_WINDOWS_PER_VIDEO;
+  if (windows.length <= maxWindows) return windows;
+  if (maxWindows === 1) return [windows[0]];
+
+  return Array.from({ length: maxWindows }, (_, index) =>
+    windows[Math.round((index * (windows.length - 1)) / (maxWindows - 1))],
+  );
+}
+
+export async function fetchBrollSuggestions(windows: BRollWindow[]): Promise<BRollSearchResult[]> {
+  const results: BRollSearchResult[] = [];
+  for (const batch of chunkBrollWindows(windows)) {
+    const response = await fetch("/api/broll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        windows: batch.map(({ id, start, end, query }) => ({ id, start, end, query })),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success || !Array.isArray(data.results)) {
+      throw new Error(data.error || `B-roll search failed with status ${response.status}.`);
+    }
+    results.push(...data.results as BRollSearchResult[]);
+  }
+  return results;
+}
+
+export function isBrollImage(clip: BRollClip): boolean {
+  if (clip.mediaType) return clip.mediaType === "image";
+  return /\.(?:jpe?g|png)$/i.test(clip.sourceKey ?? "");
+}
 
 // Small stopword list - expanded to include common "sentence noise" and grammar words
 const STOPWORDS = new Set([
@@ -132,7 +203,10 @@ export function buildBrollWindows(
 ): BRollWindow[] {
   const windowSeconds = opts.windowSeconds ?? BROLL_CONFIG.DEFAULT_WINDOW_SIZE;
   const maxWindows = opts.videoDuration
-    ? Math.ceil(opts.videoDuration / BROLL_CONFIG.TARGET_BROLL_INTERVAL)
+    ? Math.min(
+        BROLL_CONFIG.MAX_SEARCH_WINDOWS_PER_VIDEO,
+        Math.ceil(opts.videoDuration / BROLL_CONFIG.TARGET_BROLL_INTERVAL),
+      )
     : (opts.maxWindows ?? 20);
 
   if (!segments.length) return [];
@@ -187,8 +261,11 @@ export function buildBrollWindows(
 }
 
 export function activeBrollAt(brolls: BRollClip[], t: number): BRollClip | null {
+  let active: BRollClip | null = null;
   for (const b of brolls) {
-    if (t >= b.start && t < b.end) return b;
+    if (t >= b.start && t < b.end && (!active || b.start >= active.start)) {
+      active = b;
+    }
   }
-  return null;
+  return active;
 }

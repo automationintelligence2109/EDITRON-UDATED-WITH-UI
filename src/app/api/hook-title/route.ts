@@ -1,10 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { generateHeuristicHookTitle } from "@/lib/hook-title";
+import { getAuthenticatedUserId } from "@/lib/server-auth";
+import { checkRateLimit } from "@/lib/request-protection";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
-type IncomingSegment = { start: number; end: number; text: string };
+const requestSchema = z.object({
+  segments: z.array(z.object({
+    start: z.number().finite().min(0),
+    end: z.number().finite().min(0),
+    text: z.string().max(1_000),
+  }).refine((segment) => segment.end >= segment.start)).min(1).max(200),
+});
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
@@ -109,17 +118,45 @@ async function tryAnthropic(hookText: string): Promise<string | null> {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { segments?: IncomingSegment[] };
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ success: false, error: "Sign in to generate a hook title." }, { status: 401 });
+  }
+
+  let rateLimit: Awaited<ReturnType<typeof checkRateLimit>>;
   try {
-    body = await req.json();
+    rateLimit = await checkRateLimit(`hook-title:${userId}`, 10, 60 * 60_000);
+  } catch (error) {
+    console.error("[Hook title] Rate limiter unavailable:", error);
+    return NextResponse.json(
+      { success: false, error: "Hook title generation is temporarily unavailable." },
+      { status: 503 },
+    );
+  }
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { success: false, error: "Hook title limit reached. Please try again later." },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
+  }
+
+  const contentLength = Number(req.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > 64 * 1024) {
+    return NextResponse.json({ success: false, error: "Hook title request is too large." }, { status: 413 });
+  }
+
+  let rawBody: unknown;
+  try {
+    rawBody = await req.json();
   } catch {
     return NextResponse.json({ success: false, error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const segments = Array.isArray(body.segments) ? body.segments : [];
-  if (!segments.length) {
-    return NextResponse.json({ success: false, error: "No segments provided." }, { status: 400 });
+  const parsedBody = requestSchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return NextResponse.json({ success: false, error: "Hook title data is invalid." }, { status: 400 });
   }
+  const segments = parsedBody.data.segments;
 
   const hookText =
     segments

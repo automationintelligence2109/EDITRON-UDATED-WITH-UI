@@ -12,8 +12,9 @@ interface LiquidMetalButtonProps {
   onClick?: () => void;
   viewMode?: "text" | "icon";
   className?: string;
-  width?: number | string;
-  height?: number | string;
+  width?: number;
+  height?: number;
+  disabled?: boolean;
 }
 
 export function LiquidMetalButton({
@@ -23,6 +24,7 @@ export function LiquidMetalButton({
   className = "",
   width: customWidth,
   height: customHeight,
+  disabled = false,
 }: LiquidMetalButtonProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [isPressed, setIsPressed] = useState(false);
@@ -140,6 +142,8 @@ export function LiquidMetalButton({
   };
 
   const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
+    if (disabled) return;
+
     if (shaderMount.current?.setSpeed) {
       shaderMount.current.setSpeed(2.4);
       setTimeout(() => {
@@ -323,7 +327,7 @@ export function LiquidMetalButton({
               height: `${dimensions.height}px`,
               background: "transparent",
               border: "none",
-              cursor: "pointer",
+              cursor: disabled ? "not-allowed" : "pointer",
               outline: "none",
               zIndex: 40,
               transformStyle: "preserve-3d",
@@ -332,7 +336,9 @@ export function LiquidMetalButton({
                 "all 0.8s cubic-bezier(0.34, 1.56, 0.64, 1), width 0.4s ease, height 0.4s ease",
               overflow: "hidden",
               borderRadius: "100px",
+              opacity: disabled ? 0.55 : 1,
             }}
+            disabled={disabled}
             aria-label={label}
           >
             {ripples.map((ripple) => (

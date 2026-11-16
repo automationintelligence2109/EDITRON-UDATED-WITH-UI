@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "@/hooks/use-toast";
@@ -17,7 +19,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import {
   Upload,
   FileAudio,
@@ -25,7 +26,6 @@ import {
   Sparkles,
   Loader2,
   Trash2,
-  Plus,
   Download,
   Play,
   Pause,
@@ -44,48 +44,96 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
-import { INDIAN_LANGUAGES, INTERNATIONAL_LANGUAGES, getFontFamily } from "@/lib/languages";
+import { getFontFamily } from "@/lib/languages";
 import {
   DEFAULT_STYLE,
+  CINEMATIC_PRESETS,
   downloadFile,
   formatClock,
+  getActiveWordIndex,
+  getCaptionWordRenderState,
+  getCaptionWords,
+  getCaptionPositionBase,
+  getEaseOutProgress,
   generateSRT,
   generateTXT,
   generateVTT,
+  layoutCaptionWords,
   type CaptionSegment,
   type CaptionStyle,
 } from "@/lib/captions";
 import { CaptionPreview } from "./caption-preview";
 import { StylePanel } from "./style-panel";
 import { SegmentCard } from "./segment-card";
-import { activeBrollAt, type BRollClip, buildBrollWindows } from "@/lib/broll";
+import {
+  activeBrollAt,
+  fetchBrollSuggestions,
+  isBrollImage,
+  limitBrollWindows,
+  type BRollClip,
+  buildBrollWindows,
+} from "@/lib/broll";
+import {
+  activeBrollTransitionAt,
+  assignBrollTransitions,
+  BROLL_TRANSITIONS,
+  cycleBrollTransitions,
+} from "@/lib/broll-transitions";
+import { createProject, getProject, updateProject } from "@/lib/recent-projects";
+import type { ProjectSnapshot } from "@/lib/project-state";
 import { LiquidMetalButton } from "./liquid-metal-button";
 import { cn } from "@/lib/utils";
 import { applyAutoEmojis } from "@/lib/emojis";
 
-type Stage = "idle" | "uploading" | "transcribing" | "timing" | "done" | "error";
+type Stage = "idle" | "uploading" | "queued" | "transcribing" | "timing" | "done" | "error";
 
 const STAGE_LABELS: Record<Stage, string> = {
   idle: "Idle",
   uploading: "Uploading file…",
+  queued: "Waiting for a video worker…",
   transcribing: "Transcribing speech with Whisper AI…",
   timing: "Aligning word timings…",
   done: "Captions ready",
   error: "Something went wrong",
 };
 
+const PROCESSING_STAGE_LABELS: Record<string, string> = {
+  downloading: "Loading video",
+  starting: "Starting",
+  cutting: "Preparing video",
+  extracting_audio: "Preparing audio",
+  transcribing: "Transcribing speech",
+  saving_video: "Saving processed video",
+  complete: "Complete",
+};
+
 const ACCEPTED = ".mp4,.mp3,.wav,.m4a,.webm,.mov,.ogg,.aac,.mkv";
 
-export function CaptionStudio() {
+export function CaptionStudio({
+  initialFile = null,
+  projectId = null,
+}: {
+  initialFile?: File | null;
+  projectId?: string | null;
+}) {
   const [file, setFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [sourceName, setSourceName] = useState("");
+  const [sourceKey, setSourceKey] = useState<string | null>(null);
+  const [savedProjectId, setSavedProjectId] = useState<string | null>(null);
+  const [projectLoadState, setProjectLoadState] = useState<"loading" | "ready" | "error">(
+    projectId ? "loading" : "ready",
+  );
+  const [projectSaveState, setProjectSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [isAudio, setIsAudio] = useState(false);
-  const [language, setLanguage] = useState("en-US");
   const [stage, setStage] = useState<Stage>("idle");
+  const [processingProgress, setProcessingProgress] = useState(0);
+  const [processingStage, setProcessingStage] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [segments, setSegments] = useState<CaptionSegment[]>([]);
   const [style, setStyle] = useState<CaptionStyle>(DEFAULT_STYLE);
   const [brolls, setBrolls] = useState<BRollClip[]>([]);
+  const [brollTransitionsEnabled, setBrollTransitionsEnabled] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [aspectRatio, setAspectRatio] = useState<number>(16 / 9);
@@ -93,9 +141,15 @@ export function CaptionStudio() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
-  const [activeTab, setActiveTab] = useState<"preview" | "captions" | "style" | "broll">("preview");
+  const [activeTab, setActiveTab] = useState<"preview" | "captions" | "style" | "broll">("style");
 
   const [suggestions, setSuggestions] = useState<Record<string, any>>({});
+  const skipSuggestionsRef = useRef(false);
+  const skipAutosaveRef = useRef(false);
+  const projectIdRef = useRef<string | null>(null);
+  const sourceKeyRef = useRef<string | null>(null);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const projectSnapshotRef = useRef<ProjectSnapshot | null>(null);
 
   const fetchSuggestions = async () => {
     if (!segments.length) return;
@@ -171,29 +225,21 @@ export function CaptionStudio() {
     }
 
     try {
-      const res = await fetch("/api/broll", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ windows: finalWindows }),
-      });
-      if (!res.ok) {
-        throw new Error(`Server responded with ${res.status}: ${res.statusText}`);
-      }
-      const data = await res.json();
-      if (data.success) {
+      const results = await fetchBrollSuggestions(limitBrollWindows(finalWindows));
+      if (results.length) {
         const map: Record<string, any> = {};
-        (data.results as any[]).forEach(r => {
+        results.forEach(r => {
           map[r.windowId] = { ...r, currentIndex: 0 };
         });
         setSuggestions(map);
 
         const autoAssignments: BRollClip[] = [];
-        (data.results as any[]).forEach(r => {
+        results.forEach(r => {
           if (r.windowId.startsWith("auto-") && r.clips?.[0]) {
             const clip = r.clips[0];
             const seg = segments.find(s => s.id === r.windowId.replace("auto-", ""));
             if (seg) {
-              autoAssignments.push({
+              autoAssignments.push(assignBrollTransitions({
                 id: `${seg.id}-${clip.id}`,
                 windowId: r.windowId,
                 start: seg.start,
@@ -201,30 +247,42 @@ export function CaptionStudio() {
                 source: clip.source,
                 previewUrl: clip.previewUrl,
                 thumbnail: clip.thumbnail,
-                query: clip.query,
+                query: r.query,
                 durationHint: clip.durationHint,
-              });
+              }));
             }
           }
         });
 
         if (autoAssignments.length > 0) {
-          setBrolls(prev => [...prev, ...autoAssignments].sort((a, b) => a.start - b.start));
+          setBrolls(prev =>
+            cycleBrollTransitions(
+              [...prev, ...autoAssignments].sort((a, b) => a.start - b.start)
+            )
+          );
         }
-      } else {
-        console.error("B-roll API error:", data.error);
       }
-    } catch (e) {
-      console.error("B-roll fetch failed", e);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not load B-roll suggestions.";
+      console.error("B-roll fetch failed", error);
+      toast({
+        title: "B-roll suggestions unavailable",
+        description: message,
+        variant: "destructive",
+      });
     }
   };
 
   useEffect(() => {
-    if (segments.length) fetchSuggestions();
+    if (!segments.length) return;
+    if (skipSuggestionsRef.current) {
+      skipSuggestionsRef.current = false;
+      return;
+    }
+    fetchSuggestions();
   }, [segments.length]);
 
-  const [wordsPerCaption, setWordsPerCaption] = useState(3);
-  const [captionSpeed, setCaptionSpeed] = useState(1.0);
+  const [wordsPerCaption, setWordsPerCaption] = useState(5);
   const [isExportingVideo, setIsExportingVideo] = useState(false);
   const [exportQuality, setExportQuality] = useState<"480p" | "720p" | "1080p">("1080p");
   const [autoEmojiEnabled, setAutoEmojiEnabled] = useState(false);
@@ -233,44 +291,208 @@ export function CaptionStudio() {
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const loadedInitialFileRef = useRef<File | null>(null);
+  const generationRequestIdRef = useRef(0);
+  const generationAbortControllerRef = useRef<AbortController | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
-  useEffect(() => {
-    if (segments.length === 0) return;
+  const projectSnapshot = useMemo<ProjectSnapshot>(() => ({
+    sourceName,
+    isAudio,
+    segments,
+    style,
+    brolls,
+    aspectRatio,
+    wordsPerCaption,
+    autoEmojiEnabled,
+    brollTransitionsEnabled,
+  }), [
+    sourceName,
+    isAudio,
+    segments,
+    style,
+    brolls,
+    aspectRatio,
+    wordsPerCaption,
+    autoEmojiEnabled,
+    brollTransitionsEnabled,
+  ]);
 
+  useEffect(() => {
+    projectSnapshotRef.current = projectSnapshot;
+  }, [projectSnapshot]);
+
+  useEffect(() => {
+    if (
+      projectLoadState !== "ready" ||
+      segments.length === 0 ||
+      (!savedProjectId && !sourceKey)
+    ) {
+      return;
+    }
+    if (skipAutosaveRef.current) {
+      skipAutosaveRef.current = false;
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      const expectedSourceKey = sourceKey;
+      saveQueueRef.current = saveQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const snapshot = projectSnapshotRef.current;
+          if (!snapshot) return;
+
+          const currentProjectId = projectIdRef.current;
+          if (currentProjectId) {
+            setProjectSaveState("saving");
+            await updateProject(currentProjectId, {
+              name: snapshot.sourceName.replace(/\.[^.]+$/, "") || "Untitled project",
+              snapshot,
+            });
+          } else {
+            const currentSourceKey = sourceKeyRef.current;
+            if (!currentSourceKey || currentSourceKey !== expectedSourceKey) return;
+            setProjectSaveState("saving");
+            const createdProject = await createProject({
+              name: snapshot.sourceName.replace(/\.[^.]+$/, "") || "Untitled project",
+              sourceKey: currentSourceKey,
+              snapshot,
+            });
+            skipAutosaveRef.current = true;
+            projectIdRef.current = createdProject.id;
+            setSavedProjectId(createdProject.id);
+          }
+
+          setProjectSaveState("saved");
+        })
+        .catch((error: unknown) => {
+          console.error("[CaptionStudio] Project autosave failed:", error);
+          setProjectSaveState("error");
+          toast({
+            title: "Project could not be saved",
+            description: error instanceof Error ? error.message : "Try editing again to retry saving.",
+            variant: "destructive",
+          });
+        });
+    }, 800);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    projectLoadState,
+    sourceName,
+    sourceKey,
+    savedProjectId,
+    isAudio,
+    segments,
+    style,
+    brolls,
+    aspectRatio,
+    wordsPerCaption,
+    autoEmojiEnabled,
+    brollTransitionsEnabled,
+  ]);
+
+  const handleAutoEmojiChange = useCallback((enabled: boolean) => {
+    setAutoEmojiEnabled(enabled);
     setSegments((prev) => {
       return prev.map(s => ({
         ...s,
-        text: autoEmojiEnabled
+        text: enabled
           ? applyAutoEmojis(s.text)
           : s.text.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{1F600}-\u{1F64F}]/gu, "").trim()
       }));
     });
-  }, [autoEmojiEnabled]);
+  }, []);
 
   const handleFile = useCallback(
     (f: File | null) => {
       if (!f) return;
+      generationRequestIdRef.current += 1;
+      generationAbortControllerRef.current?.abort();
+      generationAbortControllerRef.current = null;
+      videoRef.current?.pause();
       if (videoUrl) URL.revokeObjectURL(videoUrl);
       const url = URL.createObjectURL(f);
       setFile(f);
+      setSourceName(f.name);
+      setSourceKey(null);
+      sourceKeyRef.current = null;
+      setSavedProjectId(null);
+      projectIdRef.current = null;
+      setProjectSaveState("idle");
       setVideoUrl(url);
       setIsAudio(!f.type.startsWith("video/"));
+      setBrollTransitionsEnabled(true);
+      setStyle(DEFAULT_STYLE);
       setSegments([]);
+      setBrolls([]);
+      setCurrentTime(0);
+      setDuration(0);
+      setIsPlaying(false);
       setStage("idle");
+      setProcessingProgress(0);
+      setProcessingStage("");
       setErrorMsg(null);
+      setExportMsg(null);
+      setExportProgress(0);
       setAspectRatio(16 / 9);
     },
     [videoUrl]
   );
 
   useEffect(() => {
-    const uploaded = (window as any).lastUploadedVideo;
-    if (uploaded && uploaded.file) {
-      handleFile(uploaded.file);
-      delete (window as any).lastUploadedVideo;
+    if (initialFile && loadedInitialFileRef.current !== initialFile) {
+      loadedInitialFileRef.current = initialFile;
+      handleFile(initialFile);
     }
-  }, [handleFile]);
+  }, [handleFile, initialFile]);
+
+  useEffect(() => {
+    if (!projectId) return;
+
+    let isCurrent = true;
+    getProject(projectId)
+      .then(({ project, videoUrl: savedVideoUrl }) => {
+        if (!isCurrent) return;
+
+        const snapshot = project.snapshot;
+        skipSuggestionsRef.current = true;
+        skipAutosaveRef.current = true;
+        setErrorMsg(null);
+        setSavedProjectId(project.id);
+        projectIdRef.current = project.id;
+        setSourceName(snapshot.sourceName);
+        setIsAudio(snapshot.isAudio);
+        setSegments(snapshot.segments);
+        setStyle(snapshot.style);
+        setBrolls(
+          cycleBrollTransitions(
+            [...snapshot.brolls].sort((a, b) => a.start - b.start)
+          )
+        );
+        setAspectRatio(snapshot.aspectRatio);
+        setWordsPerCaption(snapshot.wordsPerCaption);
+        setAutoEmojiEnabled(snapshot.autoEmojiEnabled);
+        setBrollTransitionsEnabled(snapshot.brollTransitionsEnabled ?? true);
+        setVideoUrl(savedVideoUrl);
+        setStage("done");
+        setActiveTab("style");
+        setProjectLoadState("ready");
+        setProjectSaveState("saved");
+      })
+      .catch((error: unknown) => {
+        if (!isCurrent) return;
+        const message = error instanceof Error ? error.message : "Could not load this project.";
+        setErrorMsg(message);
+        setStage("error");
+        setProjectLoadState("error");
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [projectId]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -308,48 +530,102 @@ export function CaptionStudio() {
   };
 
   const generate = async () => {
+    if (
+      stage === "uploading" ||
+      stage === "queued" ||
+      stage === "transcribing" ||
+      stage === "timing"
+    ) return;
     if (!file) {
+      if (stage === "done" && segments.length > 0 && videoUrl) return;
       setErrorMsg("Upload a file first.");
       setStage("error");
       return;
     }
+    const requestId = ++generationRequestIdRef.current;
+    const abortController = new AbortController();
+    generationAbortControllerRef.current = abortController;
     setErrorMsg(null);
+    setProcessingProgress(0);
+    setProcessingStage("");
     setStage("uploading");
 
     try {
       const fd = new FormData();
       fd.append("file", file);
-      fd.append("language", language);
       fd.append("words_per_caption", String(wordsPerCaption));
 
-      setTimeout(() => setStage("transcribing"), 250);
-
-      const res = await fetch("/api/transcribe", {
+      const enqueueResponse = await fetch("/api/transcribe", {
         method: "POST",
         body: fd,
+        signal: abortController.signal,
       });
-      const data = await res.json();
+      const enqueueData = await enqueueResponse.json();
 
-      if (!data.success) {
-        throw new Error(data.error || "Transcription failed.");
+      if (!enqueueResponse.ok || !enqueueData.success || typeof enqueueData.jobId !== "string") {
+        throw new Error(enqueueData.error || "Could not queue this video.");
       }
 
-      if (data.tightenedVideoUrl) {
-        // tightenedVideoUrl is already a signed Cloudflare R2 URL.
-        // Do not send it through /api/video, which expects a local file path.
-        setVideoUrl(data.tightenedVideoUrl);
+      if (requestId !== generationRequestIdRef.current) return;
+      setStage("queued");
+
+      let data: any;
+      while (true) {
+        const statusResponse = await fetch(
+          `/api/transcribe/${encodeURIComponent(enqueueData.jobId)}`,
+          { cache: "no-store", signal: abortController.signal },
+        );
+        const statusData = await statusResponse.json();
+        if (!statusResponse.ok) {
+          throw new Error(statusData.error || "Could not check video processing status.");
+        }
+        if (requestId !== generationRequestIdRef.current) return;
+
+        setProcessingProgress(
+          typeof statusData.progress === "number" ? statusData.progress : 0,
+        );
+        setProcessingStage(
+          typeof statusData.stage === "string" ? statusData.stage : "",
+        );
+        if (statusData.status === "FAILED") {
+          throw new Error(statusData.error || "Video processing failed.");
+        }
+        if (statusData.status === "SUCCEEDED") {
+          if (!statusData.result) throw new Error("The video result was empty.");
+          data = statusData.result;
+          break;
+        }
+        if (statusData.status !== "QUEUED" && statusData.status !== "PROCESSING") {
+          throw new Error("The video processing status was invalid.");
+        }
+        setStage(statusData.status === "QUEUED" ? "queued" : "transcribing");
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
       }
+
+      if (requestId !== generationRequestIdRef.current) return;
+      if (typeof data.tightenedVideoUrl === "string") setVideoUrl(data.tightenedVideoUrl);
+      if (typeof data.sourceKey !== "string" || !data.sourceKey) {
+        throw new Error("The processed video was not saved to project storage.");
+      }
+      setSourceKey(data.sourceKey);
+      sourceKeyRef.current = data.sourceKey;
 
       setStage("timing");
       await new Promise((r) => setTimeout(r, 250));
 
-      const rawSegs: any[] = (data.captions || []).map(
-        (c: { id?: string; start: number; end: number; text: string; v_score?: number }, i: number) => ({
+      const rawSegs: CaptionSegment[] = (data.captions || []).map(
+        (c: {
+          id?: string;
+          start: number;
+          end: number;
+          text: string;
+          words?: CaptionSegment["words"];
+        }, i: number) => ({
           id: c.id || `seg-${i}-${Math.random().toString(36).slice(2, 8)}`,
           start: c.start,
           end: c.end,
           text: c.text,
-          v_score: c.v_score || 0,
+          words: c.words,
         })
       );
 
@@ -363,17 +639,15 @@ export function CaptionStudio() {
       }
 
       setSegments(segs);
-      if (data.language && data.language.length >= 2) {
-        setLanguage(data.language);
-      }
       setStage("done");
       setActiveTab("captions");
       setAutoEmojiEnabled(true);
       toast({
         title: "Captions ready!",
-        description: `${segs.length} segments · language: ${data.language || language}${data.languageProbability ? ` (${Math.round(data.languageProbability * 100)}%)` : ""}`,
+        description: `${segs.length} caption segments generated.`,
       });
     } catch (err: unknown) {
+      if (requestId !== generationRequestIdRef.current) return;
       const msg = err instanceof Error ? err.message : "Transcription failed.";
       setErrorMsg(msg);
       setStage("error");
@@ -382,33 +656,10 @@ export function CaptionStudio() {
         description: msg,
         variant: "destructive",
       });
-    }
-  };
-
-  const loadSample = async () => {
-    try {
-      setStage("uploading");
-      setErrorMsg(null);
-      const res = await fetch("/api/sample-transcript");
-      const data = await res.json();
-      if (!data.success) throw new Error("Failed to load sample.");
-      setStage("timing");
-      await new Promise((r) => setTimeout(r, 250));
-      setSegments(
-        (data.segments as Array<{ start: number; end: number; text: string }>).map((s, i) => ({
-          id: `sample-${i}-${Math.random().toString(36).slice(2, 6)}`,
-          start: s.start,
-          end: s.end,
-          text: s.text,
-        }))
-      );
-      setLanguage(data.language || "en-US");
-      setStage("done");
-      setActiveTab("captions");
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Sample load failed.";
-      setErrorMsg(msg);
-      setStage("error");
+    } finally {
+      if (requestId === generationRequestIdRef.current) {
+        generationAbortControllerRef.current = null;
+      }
     }
   };
 
@@ -430,26 +681,24 @@ export function CaptionStudio() {
       const windowId = clip.windowId;
       if (!windowId) return prev;
 
+      const previousClip = prev.find((b) => b.windowId === windowId);
       const withoutThisWindow = prev.filter((b) => b.windowId !== windowId);
       const seg = segments.find(s => s.id === segmentId);
       const start = seg?.start || 0;
 
       const duration = Math.max(3, Math.min(4, 6));
 
-      return [
+      return cycleBrollTransitions([
         ...withoutThisWindow,
-        {
+        assignBrollTransitions({
+          ...clip,
           id: `${segmentId}-${clip.id}`,
           windowId: windowId,
           start: start,
           end: start + duration,
-          source: clip.source,
-          previewUrl: clip.previewUrl,
-          thumbnail: clip.thumbnail,
-          query: clip.query,
-          durationHint: clip.durationHint,
-        },
-      ].sort((a, b) => a.start - b.start);
+          transitionOrder: previousClip?.transitionOrder ?? clip.transitionOrder,
+        }),
+      ].sort((a, b) => a.start - b.start));
     });
   };
 
@@ -493,10 +742,11 @@ export function CaptionStudio() {
 
       setBrolls((prev) => {
         const windowId = `direct-${segmentId}`;
+        const previousClip = prev.find((b) => b.windowId === windowId);
         const withoutThisWindow = prev.filter((b) => b.windowId !== windowId);
-        return [
+        return cycleBrollTransitions([
           ...withoutThisWindow,
-          {
+          assignBrollTransitions({
             id: `${segmentId}-${bestClip.id}`,
             windowId: windowId,
             start: start,
@@ -506,8 +756,9 @@ export function CaptionStudio() {
             thumbnail: bestClip.thumbnail,
             query: text,
             durationHint: bestClip.durationHint,
-          },
-        ].sort((a, b) => a.start - b.start);
+            transitionOrder: previousClip?.transitionOrder,
+          }),
+        ].sort((a, b) => a.start - b.start));
       });
 
       toast({ title: "B-roll added", description: `Added clip for "${text}"` });
@@ -585,11 +836,12 @@ export function CaptionStudio() {
     }));
 
     setBrolls((prev) => {
+      const previousClip = prev.find((b) => b.windowId === windowId);
       const withoutThisWindow = prev.filter((b) => b.windowId !== windowId);
       const duration = Math.max(3, Math.min(clip.end - clip.start, 4));
-      return [
+      return cycleBrollTransitions([
         ...withoutThisWindow,
-        {
+        assignBrollTransitions({
           id: `${windowId}-${selectedClip.id}`,
           windowId: windowId,
           start: clip.start,
@@ -599,24 +851,12 @@ export function CaptionStudio() {
           thumbnail: selectedClip.thumbnail,
           query: query,
           durationHint: selectedClip.durationHint,
-        },
-      ].sort((a, b) => a.start - b.start);
+          transitionOrder: previousClip?.transitionOrder,
+        }),
+      ].sort((a, b) => a.start - b.start));
     });
 
     toast({ title: "B-roll cycled", description: `Switched to clip ${nextIndex + 1} of ${s.clips.length}` });
-  };
-
-  const addSegment = () => {
-    const lastEnd = segments.length ? segments[segments.length - 1].end : 0;
-    const seg: CaptionSegment = {
-      id: `seg-new-${Math.random().toString(36).slice(2, 8)}`,
-      start: lastEnd,
-      end: +(lastEnd + 1.5).toFixed(3),
-      text: "new caption",
-    };
-    setSegments((prev) => [...prev, seg]);
-    setEditingId(seg.id);
-    setEditText(seg.text);
   };
 
   const commitEdit = (id: string) => {
@@ -690,6 +930,23 @@ export function CaptionStudio() {
     setExportMsg("Preparing canvas…");
 
     try {
+      const exportFontFaces = [
+        `500 ${style.fontSize}px "Plus Jakarta Sans"`,
+        `italic 400 ${style.fontSize}px "Instrument Serif"`,
+        `600 ${style.fontSize}px "Inter"`,
+        `500 ${style.fontSize}px "Space Grotesk"`,
+        `700 ${style.fontSize}px "Outfit"`,
+        `600 ${style.fontSize}px "Syne"`,
+        `${style.fontWeight ?? (style.bold ? 800 : 500)} ${style.fontSize}px ${getFontFamily(style.fontFamily)}`,
+      ];
+      if (style.activeWordFontFamily) {
+        exportFontFaces.push(
+          `${style.activeWordFontStyle ?? "italic"} ${style.activeWordFontWeight ?? 400} ${style.fontSize}px ${getFontFamily(style.activeWordFontFamily)}`,
+        );
+      }
+      await Promise.all(exportFontFaces.map((fontFace) => document.fonts.load(fontFace)));
+      await document.fonts.ready;
+
       if (!video.videoWidth || !video.videoHeight) {
         await new Promise<void>((resolve, reject) => {
           const onLoad = () => resolve();
@@ -730,7 +987,6 @@ export function CaptionStudio() {
       const canvasStream = canvas.captureStream(30);
 
       const combinedStream = canvasStream;
-      let cleanupAudioContext: (() => void) | null = null;
       try {
         const videoEl = video as HTMLVideoElement & { captureStream?: () => MediaStream; mozCaptureHStream?: () => MediaStream };
         const vStream = videoEl.captureStream?.() || (videoEl as any).mozCaptureStream?.();
@@ -757,7 +1013,7 @@ export function CaptionStudio() {
       const recorder = new MediaRecorder(combinedStream, {
         mimeType,
         videoBitsPerSecond:
-          exportQuality === "1080p" ? 8_000_000 : exportQuality === "720p" ? 5_000_000 : exportQuality === "2_500_000",
+          exportQuality === "1080p" ? 8_000_000 : exportQuality === "720p" ? 5_000_000 : 2_500_000,
       });
 
       const chunks: Blob[] = [];
@@ -777,24 +1033,47 @@ export function CaptionStudio() {
       const totalDuration = video.duration || segments[segments.length - 1]?.end || 10;
 
       const fontFamilyCss = getFontFamily(style.fontFamily);
-      const fontWeight = style.bold ? "800" : "500";
+      const fontWeight = String(style.fontWeight ?? (style.bold ? 800 : 500));
       const fontStyle = style.italic ? "italic" : "normal";
 
       const brollEls = new Map<string, HTMLVideoElement>();
+      const brollImageEls = new Map<string, HTMLImageElement>();
+      const transitionEls = new Map<string, HTMLVideoElement>();
       let brollTainted = false;
+      let transitionLoadFailed = false;
       let lastActiveBrollId: string | null = null;
+      let lastActiveTransitionKey: string | null = null;
+      let lastActiveTransitionAssetId: string | null = null;
       if (brolls.length) {
         setExportMsg("Loading b-roll clips…");
         await Promise.all(
           brolls.map(
-            (b) =>
-              new Promise<void>((resolve) => {
+            (b) => {
+              if (isBrollImage(b)) {
+                return new Promise<void>((resolve) => {
+                  if (brollImageEls.has(b.previewUrl)) return resolve();
+                  const image = document.createElement("img");
+                  image.crossOrigin = "anonymous";
+                  const timeout = setTimeout(resolve, 4000);
+                  image.addEventListener("load", () => {
+                    clearTimeout(timeout);
+                    resolve();
+                  }, { once: true });
+                  image.addEventListener("error", () => {
+                    clearTimeout(timeout);
+                    resolve();
+                  }, { once: true });
+                  brollImageEls.set(b.previewUrl, image);
+                  image.src = b.previewUrl;
+                });
+              }
+              return new Promise<void>((resolve) => {
                 if (brollEls.has(b.previewUrl)) return resolve();
                 const el = document.createElement("video");
                 el.crossOrigin = "anonymous";
                 el.src = b.previewUrl;
                 el.muted = true;
-                el.loop = true;
+                el.loop = false;
                 el.playsInline = true;
                 el.preload = "auto";
                 const done = () => resolve();
@@ -803,9 +1082,60 @@ export function CaptionStudio() {
                 setTimeout(done, 4000);
                 brollEls.set(b.previewUrl, el);
                 el.load();
-              })
+              });
+            }
           )
         );
+
+        if (brollTransitionsEnabled) {
+          const transitionIds = new Set(
+            brolls.flatMap((clip) => {
+              const assigned = assignBrollTransitions(clip);
+              return [assigned.transitionIn, assigned.transitionOut].filter(
+                (id): id is string => !!id
+              );
+            })
+          );
+          await Promise.all(
+            [...transitionIds].map(
+              (id) =>
+                new Promise<void>((resolve) => {
+                  const asset = BROLL_TRANSITIONS.find((item) => item.id === id);
+                  if (!asset) {
+                    transitionLoadFailed = true;
+                    return resolve();
+                  }
+                  if (transitionEls.has(id)) return resolve();
+                  const el = document.createElement("video");
+                  el.crossOrigin = "anonymous";
+                  el.src = asset.src;
+                  el.muted = true;
+                  el.playsInline = true;
+                  el.preload = "auto";
+                  let settled = false;
+                  const done = (failed = false) => {
+                    if (settled) return;
+                    settled = true;
+                    if (failed) transitionLoadFailed = true;
+                    clearTimeout(timeout);
+                    resolve();
+                  };
+                  const timeout = setTimeout(() => done(true), 4000);
+                  el.addEventListener("loadeddata", () => done(), { once: true });
+                  el.addEventListener("error", () => done(true), { once: true });
+                  transitionEls.set(id, el);
+                  el.load();
+                })
+            )
+          );
+          if (transitionLoadFailed) {
+            toast({
+              title: "Some transitions could not be loaded",
+              description: "The video will export, but missing transition effects will be skipped.",
+              variant: "destructive",
+            });
+          }
+        }
       }
 
       setExportMsg("Recording…");
@@ -820,8 +1150,21 @@ export function CaptionStudio() {
         }
         const t = video.currentTime;
 
-        const activeBroll = !brollTainted ? brolls.find((b) => t >= b.start && t < b.end) : undefined;
-        const brollEl = activeBroll ? brollEls.get(activeBroll.previewUrl) : undefined;
+        const activeTransition = brollTainted || !brollTransitionsEnabled
+          ? null
+          : activeBrollTransitionAt(brolls, t, totalDuration);
+        const activeBroll = !brollTainted
+          ? activeBrollAt(brolls, t)
+          : null;
+        const brollEl = activeBroll && !isBrollImage(activeBroll)
+          ? brollEls.get(activeBroll.previewUrl)
+          : undefined;
+        const brollImage = activeBroll && isBrollImage(activeBroll)
+          ? brollImageEls.get(activeBroll.previewUrl)
+          : undefined;
+        const transitionEl = activeTransition
+          ? transitionEls.get(activeTransition.asset.id)
+          : undefined;
 
         if (activeBroll?.id !== lastActiveBrollId) {
           if (lastActiveBrollId) {
@@ -830,14 +1173,57 @@ export function CaptionStudio() {
             prevEl?.pause();
           }
           if (brollEl) {
-            brollEl.currentTime = 0;
-            brollEl.play().catch(() => {});
+            brollEl.currentTime = activeBroll?.trimStart ?? 0;
+            brollEl.play().catch((error: unknown) => {
+              console.error("[exportVideo] B-roll playback failed", error);
+            });
           }
           lastActiveBrollId = activeBroll?.id ?? null;
         }
 
+        if (brollEl && activeBroll) {
+          const trimStart = activeBroll.trimStart ?? 0;
+          const trimEnd = activeBroll.trimEnd ?? brollEl.duration;
+          if (brollEl.ended || (Number.isFinite(trimEnd) && brollEl.currentTime >= trimEnd)) {
+            brollEl.currentTime = trimStart;
+            if (brollEl.ended) {
+              brollEl.play().catch((error: unknown) => {
+                console.error("[exportVideo] B-roll loop playback failed", error);
+              });
+            }
+          }
+        }
+
+        if (activeTransition?.key !== lastActiveTransitionKey) {
+          if (lastActiveTransitionAssetId) {
+            transitionEls.get(lastActiveTransitionAssetId)?.pause();
+          }
+          if (activeTransition && transitionEl) {
+            transitionEl.currentTime = Math.min(
+              activeTransition.progress * activeTransition.asset.duration,
+              Math.max(0, activeTransition.asset.duration - 0.001)
+            );
+            transitionEl.playbackRate =
+              activeTransition.asset.duration / (activeTransition.end - activeTransition.start);
+            transitionEl.play().catch((error: unknown) => {
+              console.error("[exportVideo] Transition playback failed", error);
+            });
+          }
+          lastActiveTransitionKey = activeTransition?.key ?? null;
+          lastActiveTransitionAssetId = activeTransition?.asset.id ?? null;
+        }
+
         try {
-          if (brollEl && brollEl.readyState >= 2) {
+          if (brollImage && brollImage.complete && brollImage.naturalWidth > 0) {
+            drawCover(
+              ctx,
+              brollImage,
+              brollImage.naturalWidth,
+              brollImage.naturalHeight,
+              cw,
+              ch,
+            );
+          } else if (brollEl && brollEl.readyState >= 2) {
             drawCover(ctx, brollEl, brollEl.videoWidth, brollEl.videoHeight, cw, ch);
           } else {
             drawCover(ctx, video, vw, vh, cw, ch);
@@ -852,9 +1238,23 @@ export function CaptionStudio() {
           });
         }
 
+        if (activeTransition && transitionEl && transitionEl.readyState >= 2) {
+          ctx.save();
+          ctx.globalCompositeOperation = "screen";
+          drawCover(
+            ctx,
+            transitionEl,
+            transitionEl.videoWidth,
+            transitionEl.videoHeight,
+            cw,
+            ch
+          );
+          ctx.restore();
+        }
+
         const seg = segments.find((s) => t >= s.start && t < s.end);
         if (seg) {
-          drawCaption(ctx, seg, cw, ch, style, fontFamilyCss, fontWeight, fontStyle, t);
+          drawCaption(ctx, seg, cw, ch, style, fontFamilyCss, fontWeight, fontStyle, t, video);
         }
 
         setExportProgress(Math.min(100, Math.round((t / totalDuration) * 100)));
@@ -876,7 +1276,13 @@ export function CaptionStudio() {
           el.pause();
           el.src = "";
         });
-        cleanupAudioContext?.();
+        brollImageEls.forEach((image) => {
+          image.src = "";
+        });
+        transitionEls.forEach((el) => {
+          el.pause();
+          el.src = "";
+        });
       };
 
       requestAnimationFrame(renderFrame);
@@ -909,72 +1315,33 @@ export function CaptionStudio() {
 
   const updateStyle = (patch: Partial<CaptionStyle>) => {
     setStyle((s) => {
-      const updated = { ...s, ...patch };
-
       if (patch.hyperStyleId) {
-        const styleId = patch.hyperStyleId;
-        if (styleId === "pop-cinematic") {
-          updated.textColor = "#FFFFFF";
-          updated.highlightColor = "#FF6B1A";
-          updated.fontFamily = "archivo-black";
-          updated.template = "active-word";
-          updated.animation = "pop";
-        } else if (styleId === "mr-beast-style") {
-          updated.textColor = "#FFFF00";
-          updated.highlightColor = "#FFFFFF";
-          updated.fontFamily = "anton";
-          updated.template = "active-word";
-          updated.animation = "pop";
-          updated.uppercase = true;
-        } else if (styleId === "minimal-doc") {
-          updated.textColor = "#EEEEEE";
-          updated.highlightColor = "#FFFFFF";
-          updated.fontFamily = "inter";
-          updated.animation = "none";
-          updated.uppercase = false;
-        } else if (styleId === "hormozi-energy") {
-          updated.textColor = "#FFFFFF";
-          updated.highlightColor = "#CFFF00";
-          updated.fontFamily = "bebas-neue";
-          updated.template = "active-word";
-          updated.animation = "pop";
-          updated.uppercase = true;
-        } else if (styleId === "luxury-aesthetic") {
-          updated.textColor = "#FFFFFF";
-          updated.highlightColor = "#F5F5F5";
-          updated.fontFamily = "playfair-display";
-          updated.template = "plain";
-          updated.animation = "slide";
-          updated.uppercase = false;
-          updated.italic = true;
-        } else if (styleId === "cyber-neon") {
-          updated.textColor = "#00FFFF";
-          updated.highlightColor = "#FF00FF";
-          updated.fontFamily = "russo-one";
-          updated.template = "active-word";
-          updated.animation = "pop";
-          updated.bgColor = "#000000";
-          updated.bgOpacity = 70;
-        } else if (styleId === "podcast-clean") {
-          updated.textColor = "#FFFFFF";
-          updated.highlightColor = "#FFB800";
-          updated.fontFamily = "montserrat";
-          updated.template = "active-word";
-          updated.animation = "slide";
-          updated.uppercase = false;
-        } else if (styleId === "viral-breaking") {
-          updated.textColor = "#FFFFFF";
-          updated.highlightColor = "#FFFFFF";
-          updated.fontFamily = "archivo-black";
-          updated.template = "boxed";
-          updated.animation = "pop";
-          updated.bgColor = "#FF0000";
-          updated.bgOpacity = 100;
-          updated.uppercase = true;
-        }
+        const preset = CINEMATIC_PRESETS[patch.hyperStyleId];
+        return {
+          ...s,
+          animationType: undefined,
+          fontWeight: undefined,
+          letterSpacingUnit: undefined,
+          inactiveOpacity: undefined,
+          pillColor: undefined,
+          pillBorder: undefined,
+          pillBorderRadius: undefined,
+          pillPaddingX: undefined,
+          pillPaddingY: undefined,
+          accentColor: undefined,
+          textShadow: undefined,
+          shadowColor: undefined,
+          shadowBlur: undefined,
+          shadowOffsetX: undefined,
+          shadowOffsetY: undefined,
+          activeWordFontFamily: undefined,
+          activeWordFontStyle: undefined,
+          activeWordFontWeight: undefined,
+          ...preset,
+          hyperStyleId: patch.hyperStyleId,
+        };
       }
-
-      return updated;
+      return { ...s, ...patch, hyperStyleId: null };
     });
   };
 
@@ -989,20 +1356,201 @@ export function CaptionStudio() {
   const canExport = segments.length > 0;
   const activeIdx = segments.findIndex((s) => currentTime >= s.start && currentTime < s.end);
 
-  function drawCover(ctx: CanvasRenderingContext2D, el: HTMLVideoElement, vw: number, vh: number, cw: number, ch: number) {
+  function drawCover(ctx: CanvasRenderingContext2D, el: CanvasImageSource, vw: number, vh: number, cw: number, ch: number) {
     const scale = Math.max(cw / vw, ch / vh);
     const x = (cw - vw * scale) / 2;
     const y = (ch - vh * scale) / 2;
     ctx.drawImage(el, x, y, vw * scale, vh * scale);
   }
-  function drawCaption(ctx: CanvasRenderingContext2D, seg: CaptionSegment, cw: number, ch: number, style: CaptionStyle, font: string, weight: string, italic: string, t: number) {
+  function drawCaption(
+    ctx: CanvasRenderingContext2D,
+    seg: CaptionSegment,
+    cw: number,
+    ch: number,
+    style: CaptionStyle,
+    font: string,
+    weight: string,
+    italic: string,
+    time: number,
+    previewVideo: HTMLVideoElement,
+  ) {
+    const scale = cw / (previewVideo.getBoundingClientRect().width || cw);
+    const fontSize = style.fontSize * scale;
+    const maxWidth = cw * 0.88;
+    const words = getCaptionWords(seg);
+    if (!words.length) return;
+
     ctx.save();
-    ctx.font = `${weight} ${style.fontSize}px ${font}`;
-    ctx.fillStyle = style.textColor;
+    const letterSpacing =
+      (style.letterSpacingUnit === "em"
+        ? style.letterSpacing * style.fontSize
+        : style.letterSpacing) * scale;
+    const fontForWord = (index: number) => {
+      const activeWordFontFamily = style.animationType === "slide-up" &&
+        index === getActiveWordIndex(words, time) &&
+        style.activeWordFontFamily;
+      return {
+        family: activeWordFontFamily ? getFontFamily(activeWordFontFamily) : font,
+        weight: activeWordFontFamily ? style.activeWordFontWeight ?? 400 : style.fontWeight ?? weight,
+        italic: activeWordFontFamily ? style.activeWordFontStyle ?? "italic" : italic,
+      };
+    };
+    const configureFont = (index: number) => {
+      const currentFont = fontForWord(index);
+      ctx.font = `${currentFont.italic} ${currentFont.weight} ${fontSize}px ${currentFont.family}`;
+      if ("letterSpacing" in ctx) ctx.letterSpacing = `${letterSpacing}px`;
+    };
+    const activeWordIndex = getActiveWordIndex(words, time);
+    const layout = layoutCaptionWords(
+      words,
+      maxWidth,
+      fontSize,
+      (word, index) => {
+        configureFont(index);
+        return ctx.measureText(style.uppercase ? word.toUpperCase() : word).width;
+      },
+      (() => {
+        configureFont(-1);
+        return ctx.measureText(" ").width;
+      })(),
+    );
+    if (!layout.words.length) {
+      ctx.restore();
+      return;
+    }
+
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(seg.text, cw / 2, ch * 0.85);
+    const centerX = cw * (0.5 + style.posX / 100);
+    const centerY = ch * ((getCaptionPositionBase(style.position) + style.posY) / 100);
+    ctx.translate(centerX, centerY);
+
+    if (style.bgOpacity > 0) {
+      ctx.fillStyle = hexWithOpacity(style.bgColor, style.bgOpacity / 100);
+      const paddingX = 8 * scale;
+      const paddingY = 4 * scale;
+      fillRoundedRect(
+        ctx,
+        -layout.width / 2 - paddingX,
+        -layout.height / 2 - paddingY,
+        layout.width + paddingX * 2,
+        layout.height + paddingY * 2,
+        6 * scale,
+      );
+    }
+
+    if (style.animationType === "glass-pill" && activeWordIndex >= 0) {
+      const target = layout.words.find((word) => word.index === activeWordIndex);
+      const previous = activeWordIndex > 0
+        ? layout.words.find((word) => word.index === activeWordIndex - 1)
+        : target;
+      if (target && previous) {
+        const progress = activeWordIndex > 0
+          ? getEaseOutProgress(time - words[activeWordIndex].start, 0.16)
+          : 1;
+        const interpolate = (from: number, to: number) => from + (to - from) * progress;
+        const pillX = interpolate(previous.centerX, target.centerX);
+        const pillY = interpolate(previous.centerY, target.centerY);
+        const pillWordWidth = interpolate(previous.width, target.width);
+        const paddingX = (style.pillPaddingX ?? 8) * scale;
+        const paddingY = (style.pillPaddingY ?? 4) * scale;
+        const pillWidth = pillWordWidth + paddingX * 2;
+        const pillHeight = fontSize * 1.1 + paddingY * 2;
+        const pillRadius = (style.pillBorderRadius ?? 8) * scale;
+
+        ctx.save();
+        ctx.shadowColor = "rgba(0,0,0,0.25)";
+        ctx.shadowBlur = 20 * scale;
+        ctx.shadowOffsetY = 4 * scale;
+        ctx.fillStyle = style.pillColor ?? "rgba(20,20,22,0.72)";
+        ctx.beginPath();
+        ctx.roundRect(
+          pillX - pillWidth / 2,
+          pillY - pillHeight / 2,
+          pillWidth,
+          pillHeight,
+          pillRadius,
+        );
+        ctx.fill();
+        if (style.pillBorder) {
+          ctx.strokeStyle = style.pillBorder;
+          ctx.lineWidth = scale;
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
+    layout.words.forEach((placement) => {
+      const word = words[placement.index];
+      const wordState = getCaptionWordRenderState(
+        style.animationType,
+        word,
+        placement.index,
+        activeWordIndex,
+        time,
+        style.inactiveOpacity,
+      );
+      const currentFont = fontForWord(placement.index);
+      const displayWord = style.uppercase ? word.word.toUpperCase() : word.word;
+
+      ctx.save();
+      ctx.globalAlpha *= wordState.opacity;
+      ctx.filter = wordState.blur > 0 ? `blur(${wordState.blur * scale}px)` : "none";
+      ctx.fillStyle = style.textColor;
+      ctx.shadowColor = style.shadowColor ?? "rgba(0,0,0,0.6)";
+      ctx.shadowBlur = (style.shadowBlur ?? 8) * scale;
+      ctx.shadowOffsetX = (style.shadowOffsetX ?? 0) * scale;
+      ctx.shadowOffsetY = (style.shadowOffsetY ?? 2) * scale;
+      ctx.font = `${currentFont.italic} ${currentFont.weight} ${fontSize}px ${currentFont.family}`;
+      ctx.translate(
+        placement.centerX,
+        placement.centerY + wordState.translateY * scale,
+      );
+      ctx.scale(wordState.scale, wordState.scale);
+      ctx.fillText(displayWord, 0, 0);
+      ctx.restore();
+
+      if (style.animationType === "underline" && wordState.underlineProgress > 0) {
+        const underlineHeight = 3 * scale;
+        const underlineWidth = placement.width * wordState.underlineProgress;
+        const underlineX = placement.centerX - placement.width / 2;
+        const underlineY = placement.centerY + fontSize * 0.68;
+        ctx.save();
+        ctx.shadowColor = "transparent";
+        ctx.beginPath();
+        ctx.rect(underlineX, underlineY - underlineHeight / 2, underlineWidth, underlineHeight);
+        ctx.clip();
+        ctx.fillStyle = style.accentColor ?? "#818CF8";
+        ctx.beginPath();
+        ctx.roundRect(
+          underlineX,
+          underlineY - underlineHeight / 2,
+          placement.width,
+          underlineHeight,
+          underlineHeight / 2,
+        );
+        ctx.fill();
+        ctx.restore();
+      }
+    });
+
     ctx.restore();
+  }
+
+  function fillRoundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, height, radius);
+    ctx.fill();
+  }
+
+  function hexWithOpacity(hex: string, opacity: number) {
+    const value = hex.replace("#", "");
+    const normalized = value.length === 3 ? value.split("").map((char) => char + char).join("") : value;
+    const red = parseInt(normalized.slice(0, 2), 16);
+    const green = parseInt(normalized.slice(2, 4), 16);
+    const blue = parseInt(normalized.slice(4, 6), 16);
+    return `rgba(${red}, ${green}, ${blue}, ${Math.max(0, Math.min(1, opacity))})`;
   }
   function drawHookTitle(ctx: CanvasRenderingContext2D, text: string, cw: number, ch: number) {
     ctx.save();
@@ -1014,74 +1562,46 @@ export function CaptionStudio() {
   }
 
   return (
-    <section id="studio" className="relative scroll-mt-20 bg-background py-14 sm:py-20">
+    <section id="studio" className="relative scroll-mt-20 bg-background py-6 sm:py-8">
       <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="mb-8 text-center">
-          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-border bg-secondary px-3 py-1 text-xs font-semibold text-foreground">
-            <Sparkles className="size-3.5" />
-            Live caption studio
-          </div>
-          <h2 className="text-balance text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
-            Caption a video <span className="capgen-gradient-text">right now</span>
-          </h2>
-          <p className="mx-auto mt-3 max-w-2xl text-base text-muted-foreground">
-            Upload a clip, pick a language, hit generate. Edit word timings, style the captions, export SRT - all in your browser.
-          </p>
-        </div>
-
         {/* Studio card */}
         <div className="overflow-hidden rounded-3xl border-liquid-metal bg-zinc-950 shadow-2xl">
           {/* Toolbar */}
           <div className="flex flex-col gap-3 border-b border-zinc-800 bg-black px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-            <div className="flex items-center gap-3">
-              <div className="grid size-9 place-items-center rounded-lg bg-primary text-primary-foreground shadow-sm">
-                <Film className="size-4.5" />
+            <div className="flex items-start gap-3">
+              <div className="relative mt-0.5 h-5 w-9 shrink-0 overflow-hidden">
+                <Image
+                  src="/editron-studio-logo.jpeg"
+                  alt="Editron logo"
+                  width={752}
+                  height={564}
+                  className="absolute left-[-22px] top-[-18px] h-[56px] w-[75px] max-w-none"
+                />
               </div>
               <div>
-                <div className="text-sm font-bold text-white">Editron Studio</div>
-                <div className="text-xs text-muted-foreground">
-                  {file ? file.name : "No file loaded"}{" "}
+                <div className="text-sm font-bold leading-5 text-white">Editron Studio</div>
+                <div className="text-xs leading-4 text-muted-foreground">
+                  {sourceName || "No file loaded"}{" "}
                   {file && <span className="text-primary">· {(file.size / 1024 / 1024).toFixed(2)} MB</span>}
+                  {(savedProjectId || sourceKey) && (
+                    <span className={cn(
+                      "ml-2",
+                      projectSaveState === "error" ? "text-red-400" : "text-zinc-500",
+                    )}>
+                      {projectSaveState === "saving"
+                        ? "· Saving project…"
+                        : projectSaveState === "error"
+                          ? "· Save failed"
+                          : projectSaveState === "saved"
+                            ? "· Saved to account"
+                            : ""}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <Select value={language} onValueChange={setLanguage}>
-                <SelectTrigger className="h-9 w-[200px] border-border bg-card text-sm">
-                  <SelectValue placeholder="Language" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectLabel>Indian · 14</SelectLabel>
-                    {INDIAN_LANGUAGES.map((l) => (
-                      <SelectItem key={l.code} value={l.code}>
-                        {l.name}
-                        {l.roman && (
-                          <span className="ml-1 rounded bg-secondary px-1 text-[10px] uppercase text-primary">
-                            roman
-                          </span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                  <SelectGroup>
-                    <SelectLabel>International · 68</SelectLabel>
-                    {INTERNATIONAL_LANGUAGES.map((l) => (
-                      <SelectItem key={l.code} value={l.code}>
-                        {l.name}
-                        {l.roman && (
-                          <span className="ml-1 rounded bg-secondary px-1 text-[10px] uppercase text-primary">
-                            roman
-                          </span>
-                        )}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -1111,17 +1631,23 @@ export function CaptionStudio() {
               </TooltipProvider>
 
               <LiquidMetalButton
-                label="Generate Captions"
+                label={
+                  stage === "uploading" || stage === "queued" ||
+                  stage === "transcribing" || stage === "timing"
+                    ? "Processing…"
+                    : !file && stage === "done"
+                      ? "Captions ready"
+                      : "Edit now"
+                }
                 onClick={generate}
                 width={160}
-                className="disabled:opacity-50"
+                disabled={
+                  stage === "uploading" || stage === "queued" ||
+                  stage === "transcribing" || stage === "timing" ||
+                  projectLoadState === "loading"
+                }
               />
 
-              <LiquidMetalButton
-                label="Try with sample"
-                onClick={loadSample}
-                width={140}
-              />
             </div>
           </div>
 
@@ -1138,6 +1664,9 @@ export function CaptionStudio() {
                 )}
                 <span className={cn("font-medium", stage === "error" ? "text-red-600" : "text-white")}>
                   {STAGE_LABELS[stage]}
+                  {stage === "transcribing" && processingStage
+                    ? ` · ${PROCESSING_STAGE_LABELS[processingStage] || processingStage}`
+                    : ""}
                 </span>
                 {errorMsg && <span className="text-red-500"> - {errorMsg}</span>}
                 {stage === "done" && segments.length > 0 && (
@@ -1153,7 +1682,15 @@ export function CaptionStudio() {
                     initial={false}
                     animate={{
                       width:
-                        stage === "uploading" ? "30%" : stage === "transcribing" ? "70%" : stage === "timing" ? "92%" : "100%",
+                        stage === "uploading"
+                          ? "30%"
+                          : stage === "queued"
+                            ? "35%"
+                            : stage === "transcribing"
+                              ? `${Math.max(5, Math.min(100, processingProgress))}%`
+                              : stage === "timing"
+                                ? "92%"
+                                : "100%",
                     }}
                     transition={{ duration: 0.5 }}
                   />
@@ -1173,6 +1710,8 @@ export function CaptionStudio() {
                     isAudio={isAudio}
                     segments={segments}
                     currentTime={currentTime}
+                    duration={duration}
+                    brollTransitionsEnabled={brollTransitionsEnabled}
                     style={style}
                     videoRef={videoRef}
                     aspectRatio={aspectRatio}
@@ -1181,12 +1720,6 @@ export function CaptionStudio() {
                     onVideoDimensions={(w, h) => {
                       if (w > 0 && h > 0) {
                         setAspectRatio(w / h);
-
-                        const baselineSize = Math.round(w * 0.05);
-
-                        if (style.fontSize === DEFAULT_STYLE.fontSize) {
-                          setStyle((s) => ({ ...s, fontSize: Math.max(14, Math.min(120, baselineSize)) }));
-                        }
                       }
                     }}
                     brolls={brolls}
@@ -1270,7 +1803,15 @@ export function CaptionStudio() {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        onClick={() => fileInputRef.current?.click()}
+                        onClick={() => {
+                          if (!fileInputRef.current) return;
+                          fileInputRef.current.value = "";
+                          fileInputRef.current.click();
+                        }}
+                        disabled={
+                          stage === "uploading" || stage === "queued" ||
+                          stage === "transcribing" || stage === "timing"
+                        }
                         className="text-muted-foreground hover:bg-secondary hover:text-foreground"
                       >
                         <Upload className="size-4" />
@@ -1309,26 +1850,14 @@ export function CaptionStudio() {
                     <p className="mt-1 text-sm text-muted-foreground">
                       mp4 · mp3 · wav · m4a · webm · mov · up to 150MB
                     </p>
-                    <div className="mt-4 flex items-center justify-center gap-2">
+                    <div className="mt-4 flex items-center justify-center">
                       <Button type="button" className="bg-primary text-primary-foreground hover:bg-primary/90">
                         <Upload className="size-4" />
                         Choose file
                       </Button>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          loadSample();
-                        }}
-                        className="border-border bg-card text-white hover:bg-accent hover:text-foreground"
-                      >
-                        <Sparkles className="size-4" />
-                        Try sample
-                      </Button>
                     </div>
                     <p className="mt-4 text-xs text-muted-foreground">
-                      Audio is processed locally - only the bytes are sent to /api/transcribe for ASR.
+                      Uploads are processed in the background. Files up to 150 MB and 30 minutes are supported.
                     </p>
                   </div>
                 </div>
@@ -1338,7 +1867,15 @@ export function CaptionStudio() {
                   ref={fileInputRef}
                   type="file"
                   accept={ACCEPTED}
-                  onChange={(e) => handleFile(e.target.files?.[0] || null)}
+                  onChange={(event) => {
+                    const input = event.currentTarget;
+                    handleFile(input.files?.[0] || null);
+                    input.value = "";
+                  }}
+                  disabled={
+                    stage === "uploading" || stage === "queued" ||
+                    stage === "transcribing" || stage === "timing"
+                  }
                   className="hidden"
                   aria-hidden="true"
                 />
@@ -1362,7 +1899,7 @@ export function CaptionStudio() {
                   label="Export Video"
                   onClick={exportVideo}
                   width={130}
-                  className="disabled:opacity-50"
+                  disabled={!canExport || isExportingVideo}
                 />
                 {!canExport && (
                   <span className="text-xs text-muted-foreground">Generate captions to enable export</span>
@@ -1416,7 +1953,7 @@ export function CaptionStudio() {
               <div className="flex items-center justify-center gap-3 rounded-full bg-zinc-900 p-1 mb-6 border border-zinc-800">
                 {[
                   { id: "captions", label: "Captions", icon: TypeIcon },
-                  { id: "style", label: "Style", icon: Settings2 },
+                  { id: "style", label: "Templates", icon: Settings2 },
                 ].map((tab) => (
                   <button
                     key={tab.id}
@@ -1440,22 +1977,30 @@ export function CaptionStudio() {
                     <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
                       Caption Segments ({segments.length})
                     </h4>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={addSegment}
-                      className="h-7 border-zinc-800 bg-zinc-950 text-zinc-300 hover:bg-zinc-800"
-                    >
-                      <Plus className="size-3.5" />
-                      Add Segment
-                    </Button>
+                    <div className="flex h-14 items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950 px-3">
+                      <span
+                        id="broll-transitions-label"
+                        className="text-xs font-medium text-zinc-300"
+                      >
+                        Transitions
+                      </span>
+                      <span className="text-[10px] text-zinc-500">
+                        {brollTransitionsEnabled ? "On" : "Off"}
+                      </span>
+                      <Switch
+                        checked={brollTransitionsEnabled}
+                        onCheckedChange={setBrollTransitionsEnabled}
+                        aria-labelledby="broll-transitions-label"
+                        disabled={isExportingVideo}
+                        className="shrink-0 data-[state=checked]:bg-primary"
+                      />
+                    </div>
                   </div>
                   <ScrollArea className="capgen-scroll h-[550px] rounded-lg border border-zinc-800 bg-zinc-950">
                     <div className="flex flex-col gap-3 p-3">
                       {segments.length === 0 && (
                         <div className="p-6 text-center text-sm text-muted-foreground">
-                          No segments yet. Generate captions or click <strong className="text-primary">Add Segment</strong>.
+                          No segments yet. Generate captions to start editing.
                         </div>
                       )}
                       {segments.map((seg, i) => {
@@ -1465,7 +2010,7 @@ export function CaptionStudio() {
                           b.windowId === `manual-${seg.id}` ||
                           b.windowId === `user-upload-${seg.id}` ||
                           b.windowId.startsWith(`auto-`) && b.windowId.replace("auto-", "") === seg.id
-                        );
+                        ) ?? null;
 
                         return (
                           <SegmentCard
@@ -1502,7 +2047,7 @@ export function CaptionStudio() {
                     style={style}
                     onChange={updateStyle}
                     autoEmojiEnabled={autoEmojiEnabled}
-                    onAutoEmojiChange={setAutoEmojiEnabled}
+                    onAutoEmojiChange={handleAutoEmojiChange}
                     wordsPerCaption={wordsPerCaption}
                     onWordsPerCaptionChange={setWordsPerCaption}
                   />

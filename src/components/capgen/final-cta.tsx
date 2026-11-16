@@ -28,7 +28,7 @@ export function FinalCta() {
           </h2>
 
           <p className="mx-auto mt-5 max-w-xl text-lg text-[#a0a0a0]">
-            Drop it in, pick a language, generate and export. The studio is live above — no signup wall.
+            Drop it in, generate captions, and export. The studio is live above — no signup wall.
           </p>
 
           <div className="mt-8 flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-center">

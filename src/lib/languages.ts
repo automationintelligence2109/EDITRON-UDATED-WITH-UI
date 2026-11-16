@@ -117,37 +117,42 @@ export type CapGenFont = {
 };
 
 export const CAPGEN_FONTS: CapGenFont[] = [
+  { value: "plus-jakarta-sans", label: "Plus Jakarta Sans", cssFamily: "'Plus Jakarta Sans', sans-serif", category: "Modern" },
+  { value: "instrument-serif", label: "Instrument Serif", cssFamily: "'Instrument Serif', serif", category: "Elegant" },
+  { value: "space-grotesk", label: "Space Grotesk", cssFamily: "'Space Grotesk', sans-serif", category: "Tech" },
+  { value: "outfit", label: "Outfit", cssFamily: "'Outfit', sans-serif", category: "Modern" },
+  { value: "syne", label: "Syne", cssFamily: "'Syne', sans-serif", category: "Modern" },
   // Viral & High-Impact
-  { value: "archivo-black", label: "Archivo Black", cssFamily: "var(--font-archivo-black), sans-serif", category: "Viral" },
-  { value: "anton", label: "Anton", cssFamily: "var(--font-anton), sans-serif", category: "Viral" },
-  { value: "bebas-neue", label: "Bebas Neue", cssFamily: "var(--font-bebas-neue), sans-serif", category: "Viral" },
-  { value: "russo-one", label: "Russo One", cssFamily: "var(--font-russo-one), sans-serif", category: "Viral" },
+  { value: "archivo-black", label: "Archivo Black", cssFamily: "'Archivo Black', sans-serif", category: "Viral" },
+  { value: "anton", label: "Anton", cssFamily: "'Anton', sans-serif", category: "Viral" },
+  { value: "bebas-neue", label: "Bebas Neue", cssFamily: "'Bebas Neue', sans-serif", category: "Viral" },
+  { value: "russo-one", label: "Russo One", cssFamily: "'Russo One', sans-serif", category: "Viral" },
   { value: "titan-one", label: "Titan One", cssFamily: "'Titan One', sans-serif", category: "Viral" },
 
   // Modern & Clean
-  { value: "inter", label: "Inter", cssFamily: "var(--font-inter), sans-serif", category: "Modern" },
-  { value: "montserrat", label: "Montserrat", cssFamily: "var(--font-montserrat), sans-serif", category: "Modern" },
-  { value: "poppins", label: "Poppins", cssFamily: "var(--font-poppins), sans-serif", category: "Modern" },
-  { value: "rubik", label: "Rubik", cssFamily: "var(--font-rubik), sans-serif", category: "Modern" },
+  { value: "inter", label: "Inter", cssFamily: "'Inter', sans-serif", category: "Modern" },
+  { value: "montserrat", label: "Montserrat", cssFamily: "'Montserrat', sans-serif", category: "Modern" },
+  { value: "poppins", label: "Poppins", cssFamily: "'Poppins', sans-serif", category: "Modern" },
+  { value: "rubik", label: "Rubik", cssFamily: "'Rubik', sans-serif", category: "Modern" },
   { value: "roboto", label: "Roboto", cssFamily: "'Roboto', sans-serif", category: "Modern" },
 
   // Playful & Energetic
-  { value: "bangers", label: "Bangers", cssFamily: "var(--font-bangers), sans-serif", category: "Playful" },
-  { value: "luckiest-guy", label: "Luckiest Guy", cssFamily: "var(--font-luckiest-guy), sans-serif", category: "Playful" },
-  { value: "kanit", label: "Kanit", cssFamily: "var(--font-kanit), sans-serif", category: "Playful" },
+  { value: "bangers", label: "Bangers", cssFamily: "'Bangers', sans-serif", category: "Playful" },
+  { value: "luckiest-guy", label: "Luckiest Guy", cssFamily: "'Luckiest Guy', sans-serif", category: "Playful" },
+  { value: "kanit", label: "Kanit", cssFamily: "'Kanit', sans-serif", category: "Playful" },
   { value: "fredoka", label: "Fredoka", cssFamily: "'Fredoka', sans-serif", category: "Playful" },
   { value: "comic-neue", label: "Comic Neue", cssFamily: "'Comic Neue', cursive", category: "Playful" },
 
   // Elegant & Sophisticated
-  { value: "playfair-display", label: "Playfair Display", cssFamily: "var(--font-playfair-display), serif", category: "Elegant" },
+  { value: "playfair-display", label: "Playfair Display", cssFamily: "'Playfair Display', serif", category: "Elegant" },
 
   // Tech & Mono
-  { value: "space-mono", label: "Space Mono", cssFamily: "var(--font-space-mono), monospace", category: "Tech" },
-  { value: "oswald", label: "Oswald", cssFamily: "var(--font-oswald), sans-serif", category: "Tech" },
-  { value: "teko", label: "Teko", cssFamily: "var(--font-teko), sans-serif", category: "Tech" },
+  { value: "space-mono", label: "Space Mono", cssFamily: "'Space Mono', monospace", category: "Tech" },
+  { value: "oswald", label: "Oswald", cssFamily: "'Oswald', sans-serif", category: "Tech" },
+  { value: "teko", label: "Teko", cssFamily: "'Teko', sans-serif", category: "Tech" },
 ];
 
 export function getFontFamily(value: string): string {
   const font = CAPGEN_FONTS.find((f) => f.value === value);
-  return font ? font.cssFamily : "var(--font-inter), sans-serif";
+  return font ? font.cssFamily : "'Inter', sans-serif";
 }

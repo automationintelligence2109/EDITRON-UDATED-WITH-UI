@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs/promises";
 import path from "path";
+import { createHash } from "crypto";
+import { z } from "zod";
+import { getAuthenticatedUserId } from "@/lib/server-auth";
+import { checkRateLimit } from "@/lib/request-protection";
+import { BROLL_CONFIG } from "@/lib/broll-config";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -15,6 +20,17 @@ type NormalizedClip = {
   durationHint?: number;
 };
 
+const requestSchema = z.object({
+  windows: z.array(z.object({
+    id: z.string().min(1).max(200),
+    start: z.number().finite().min(0),
+    end: z.number().finite().min(0),
+    query: z.string().trim().min(1).max(120),
+  }).refine((window) => window.end > window.start, {
+    message: "Window end must be after its start.",
+  })).min(1).max(BROLL_CONFIG.MAX_SEARCH_WINDOWS_PER_REQUEST),
+});
+
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
 const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "";
 const CACHE_DIR = path.join(process.cwd(), "storage", "broll_cache");
@@ -22,8 +38,8 @@ const CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
 
 async function getCachedClips(query: string): Promise<NormalizedClip[] | null> {
   try {
-    const safeQuery = query.toLowerCase().replace(/[^a-z0-9]/g, "_");
-    const cachePath = path.join(CACHE_DIR, `${safeQuery}.json`);
+    const cacheKey = createHash("sha256").update(query.toLowerCase()).digest("hex");
+    const cachePath = path.join(CACHE_DIR, `${cacheKey}.json`);
     const stats = await fs.stat(cachePath);
     if (Date.now() - stats.mtimeMs > CACHE_TTL) return null;
     const data = await fs.readFile(cachePath, "utf8");
@@ -35,10 +51,9 @@ async function getCachedClips(query: string): Promise<NormalizedClip[] | null> {
 
 async function saveClipsToCache(query: string, clips: NormalizedClip[]) {
   try {
-    // Ensure cache directory exists before writing
     await fs.mkdir(CACHE_DIR, { recursive: true });
-    const safeQuery = query.toLowerCase().replace(/[^a-z0-9]/g, "_");
-    const cachePath = path.join(CACHE_DIR, `${safeQuery}.json`);
+    const cacheKey = createHash("sha256").update(query.toLowerCase()).digest("hex");
+    const cachePath = path.join(CACHE_DIR, `${cacheKey}.json`);
     await fs.writeFile(cachePath, JSON.stringify(clips), "utf8");
   } catch (e) {
     console.error(`Cache write failed for ${query}:`, e);
@@ -101,6 +116,28 @@ async function searchPixabay(query: string, perPage = 20): Promise<NormalizedCli
 }
 
 export async function POST(req: NextRequest) {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json({ success: false, error: "Sign in to search for B-roll." }, { status: 401 });
+  }
+
+  let rateLimit: Awaited<ReturnType<typeof checkRateLimit>>;
+  try {
+    rateLimit = await checkRateLimit(`broll:${userId}`, 10, 60_000);
+  } catch (error) {
+    console.error("[B-roll] Rate limiter unavailable:", error);
+    return NextResponse.json(
+      { success: false, error: "B-roll search is temporarily unavailable." },
+      { status: 503 },
+    );
+  }
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { success: false, error: "Too many B-roll searches. Please wait before trying again." },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
+  }
+
   if (!PEXELS_API_KEY && !PIXABAY_API_KEY) {
     return NextResponse.json(
       {
@@ -112,37 +149,49 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: { windows?: IncomingWindow[] };
+  const contentLength = Number(req.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > 64 * 1024) {
+    return NextResponse.json({ success: false, error: "B-roll search request is too large." }, { status: 413 });
+  }
+
+  let rawBody: unknown;
   try {
-    body = await req.json();
+    rawBody = await req.json();
   } catch {
     return NextResponse.json({ success: false, error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const windows = Array.isArray(body.windows) ? body.windows.slice(0, 20) : [];
-  if (!windows.length) {
-    return NextResponse.json({ success: false, error: "No windows provided." }, { status: 400 });
+  const parsedBody = requestSchema.safeParse(rawBody);
+  if (!parsedBody.success) {
+    return NextResponse.json({ success: false, error: "B-roll search data is invalid." }, { status: 400 });
   }
+  const windows: IncomingWindow[] = parsedBody.data.windows;
 
   const results = await Promise.all(
     windows.map(async (w) => {
-      let pexels = await searchPexels(w.query, 20);
-      let pixabay = await searchPixabay(w.query, 20);
-      let allClips = [...pexels, ...pixabay];
+      let allClips = await getCachedClips(w.query);
+      if (!allClips) {
+        const [pexels, pixabay] = await Promise.all([
+          searchPexels(w.query, 20),
+          searchPixabay(w.query, 20),
+        ]);
+        allClips = [...pexels, ...pixabay];
 
-      if (allClips.length < 3) {
-        const keywords = w.query.split(/\s+/).filter(k => k.length >= 3);
-        const keywordResults = await Promise.all(
-          keywords.map(async (kw) => {
-            const [p, pb] = await Promise.all([searchPexels(kw, 10), searchPixabay(kw, 10)]);
-            return [...p, ...pb];
-          })
-        );
+        if (allClips.length < 3) {
+          const keywords = w.query.split(/\s+/).filter((keyword) => keyword.length >= 3);
+          const fallbackKeyword = keywords[0];
+          if (fallbackKeyword) {
+            const [p, pb] = await Promise.all([
+              searchPexels(fallbackKeyword, 10),
+              searchPixabay(fallbackKeyword, 10),
+            ]);
+            allClips = [...allClips, ...p, ...pb];
+          }
+        }
 
-        const flattened = keywordResults.flat();
-        const unique = new Map();
-        [...allClips, ...flattened].forEach(c => unique.set(c.id, c));
+        const unique = new Map(allClips.map((clip) => [clip.id, clip]));
         allClips = Array.from(unique.values());
+        await saveClipsToCache(w.query, allClips);
       }
 
       return {

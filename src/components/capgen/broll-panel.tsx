@@ -5,7 +5,16 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Loader2, Clapperboard, X, Check, RefreshCw, Sparkles } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
-import { buildBrollWindows, type BRollClip, type BRollWindow } from "@/lib/broll";
+import {
+  buildBrollWindows,
+  fetchBrollSuggestions,
+  type BRollClip,
+  type BRollWindow,
+} from "@/lib/broll";
+import {
+  assignBrollTransitions,
+  cycleBrollTransitions,
+} from "@/lib/broll-transitions";
 import { BROLL_CONFIG } from "@/lib/broll-config";
 import type { CaptionSegment } from "@/lib/captions";
 import { formatClock } from "@/lib/captions";
@@ -53,15 +62,7 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
     setError(null);
 
     try {
-      const res = await fetch("/api/broll", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ windows: w.map((x) => ({ id: x.id, start: x.start, end: x.end, query: x.query })) }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Failed to fetch suggestions.");
-
-      const results = data.results as SuggestionResult[];
+      const results = await fetchBrollSuggestions(w);
       const map: Record<string, SuggestionResult> = {};
       const newBrolls: BRollClip[] = [];
 
@@ -74,7 +75,7 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
         if (r.clips && r.clips.length > 0) {
           const bestClip = r.clips[0];
           const duration = Math.min(r.end - r.start, BROLL_CONFIG.MAX_DURATION);
-          newBrolls.push({
+          newBrolls.push(assignBrollTransitions({
             id: `${r.windowId}-${bestClip.id}`,
             windowId: r.windowId,
             start: r.start,
@@ -84,19 +85,21 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
             thumbnail: bestClip.thumbnail,
             query: r.query,
             durationHint: bestClip.durationHint,
-          });
+          }));
         }
       }
 
       setBrolls((prev) => {
         const existingIds = new Set(prev.map(b => b.windowId));
         const filteredNew = newBrolls.filter(nb => !existingIds.has(nb.windowId));
-        return [...prev, ...filteredNew].sort((a, b) => a.start - b.start);
+        return cycleBrollTransitions(
+          [...prev, ...filteredNew].sort((a, b) => a.start - b.start)
+        );
       });
 
       setSuggestions(map);
-    } catch (e) {
-      setError("Failed to fetch b-roll suggestions.");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Failed to fetch B-roll suggestions.");
     } finally {
       setLoadingWindows({});
     }
@@ -111,22 +114,14 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
     setError(null);
 
     try {
-      const res = await fetch("/api/broll", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ windows: windows.map((x) => ({ id: x.id, start: x.start, end: x.end, query: x.query })) }),
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error || "Failed to fetch suggestions.");
-
-      const results = data.results as SuggestionResult[];
+      const results = await fetchBrollSuggestions(windows);
       const newBrolls: BRollClip[] = [];
 
       for (const r of results) {
         if (r.clips && r.clips.length > 0) {
           const bestClip = r.clips[0];
           const duration = Math.min(r.end - r.start, BROLL_CONFIG.MAX_DURATION);
-          newBrolls.push({
+          newBrolls.push(assignBrollTransitions({
             id: `${r.windowId}-${bestClip.id}`,
             windowId: r.windowId,
             start: r.start,
@@ -136,11 +131,13 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
             thumbnail: bestClip.thumbnail,
             query: r.query,
             durationHint: bestClip.durationHint,
-          });
+          }));
         }
       }
 
-      setBrolls(newBrolls);
+      setBrolls(
+        cycleBrollTransitions(newBrolls.sort((a, b) => a.start - b.start))
+      );
       setSuggestions(
         results.reduce((acc, r) => {
           acc[r.windowId] = {
@@ -152,8 +149,8 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
         }, {} as Record<string, SuggestionResult>)
       );
       toast({ title: "B-Roll Auto-Applied", description: `Added ${newBrolls.length} clips automatically.` });
-    } catch (e) {
-      setError("Failed to auto-apply B-roll clips.");
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Failed to auto-apply B-roll clips.");
     } finally {
       setLoadingWindows({});
     }
@@ -165,11 +162,12 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
 
   const assignClip = (win: BRollWindow, clip: SuggestionResult["clips"][number]) => {
     setBrolls((prev) => {
+      const previousClip = prev.find((b) => b.windowId === win.id);
       const withoutThisWindow = prev.filter((b) => b.windowId !== win.id);
       const duration = Math.min(win.end - win.start, BROLL_CONFIG.MAX_DURATION);
-      return [
+      return cycleBrollTransitions([
         ...withoutThisWindow,
-        {
+        assignBrollTransitions({
           id: `${win.id}-${clip.id}`,
           windowId: win.id,
           start: win.start,
@@ -179,8 +177,9 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
           thumbnail: clip.thumbnail,
           query: win.query,
           durationHint: clip.durationHint,
-        },
-      ].sort((a, b) => a.start - b.start);
+          transitionOrder: previousClip?.transitionOrder,
+        }),
+      ].sort((a, b) => a.start - b.start));
     });
     toast({ title: "B-roll added", description: `${formatClock(win.start)} – ${formatClock(win.start + Math.min(win.end - win.start, BROLL_CONFIG.MAX_DURATION))}` });
   };
@@ -208,11 +207,12 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
     }));
 
     setBrolls((prev) => {
+      const previousClip = prev.find((b) => b.windowId === clip.windowId);
       const withoutThisWindow = prev.filter((b) => b.windowId !== clip.windowId);
       const duration = Math.min(clip.end - clip.start, BROLL_CONFIG.MAX_DURATION);
-      return [
+      return cycleBrollTransitions([
         ...withoutThisWindow,
-        {
+        assignBrollTransitions({
           id: `${clip.windowId}-${selectedClip.id}`,
           windowId: clip.windowId,
           start: clip.start,
@@ -222,8 +222,9 @@ export function BRollPanel({ segments, brolls, setBrolls }: Props) {
           thumbnail: selectedClip.thumbnail,
           query: clip.query,
           durationHint: selectedClip.durationHint,
-        },
-      ].sort((a, b) => a.start - b.start);
+          transitionOrder: previousClip?.transitionOrder,
+        }),
+      ].sort((a, b) => a.start - b.start));
     });
 
     toast({ title: "B-roll cycled", description: `Switched to clip ${nextIndex + 1} of ${s.clips.length}` });

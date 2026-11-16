@@ -180,6 +180,25 @@
     0 1px 2px rgba(0,0,0,0.8);
 }
 
+.liquid-metal-border-shader {
+  box-sizing: border-box;
+  padding: 2px;
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+.liquid-metal-border-shader canvas {
+  position: absolute !important;
+  inset: 0;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: inherit;
+}
+
 .capgen-subtle-glow {
   box-shadow: 0 0 20px rgba(255, 255, 255, 0.05);
 }
@@ -209,13 +228,4 @@
 }
 .capgen-scroll::-webkit-scrollbar-thumb:hover {
   background: #ffffff;
-}
-
-@keyframes capgen-pulse-word {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50% { transform: scale(1.05); opacity: 0.8; }
-}
-
-.capgen-active-word {
-  animation: capgen-pulse-word 0.3s ease-in-out;
 }

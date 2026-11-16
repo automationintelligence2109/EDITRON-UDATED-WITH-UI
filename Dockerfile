@@ -7,7 +7,7 @@ WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm install
+RUN npm ci
 
 
 # =========================
@@ -25,6 +25,9 @@ COPY . .
 
 # Disable Next.js telemetry
 ENV NEXT_TELEMETRY_DISABLED=1
+
+# Generate the PostgreSQL Prisma client without connecting to a database.
+RUN DATABASE_URL="postgresql://build:build@localhost:5432/build?schema=public" npm run db:generate
 
 # Build the Next.js application
 RUN npm run build
@@ -50,6 +53,8 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
+ENV PYTHON_BIN=python3
+ENV FFMPEG_PATH=ffmpeg
 
 # Install only runtime tools
 RUN apt-get update && \
@@ -63,6 +68,14 @@ RUN apt-get update && \
 
 # Copy the minimal Next.js standalone server
 COPY --from=builder /app/.next/standalone ./
+
+# Include runtime dependencies and TypeScript worker entry points.
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/tsconfig.json ./tsconfig.json
+COPY --from=builder /app/src/lib ./src/lib
+COPY --from=builder /app/src/workers ./src/workers
+COPY --from=builder /app/prisma ./prisma
 
 # Copy static frontend assets
 COPY --from=builder /app/.next/static ./.next/static
@@ -84,6 +97,10 @@ RUN if [ -f requirements.txt ]; then \
         -r requirements.txt; \
     fi
 
+RUN python3 --version && \
+    ffmpeg -version >/dev/null && \
+    ffprobe -version >/dev/null
+
 # Let Python find the AI Cut Engine modules
 ENV PYTHONPATH=/app/src/backend/cut_engine:/app/src
 
@@ -92,7 +109,13 @@ RUN test -f /app/src/backend/cut_engine/audio.py && \
     test -f /app/src/backend/cut_engine/bridge.py && \
     echo "audio.py exists in final production image"
 
+RUN mkdir -p /app/storage && chown -R node:node /app
+USER node
+
 EXPOSE 3000
 
-# Start the Next.js standalone server
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:3000/api').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+# Override the command with `npm run worker:transcribe` for a worker service.
 CMD ["node", "server.js"]

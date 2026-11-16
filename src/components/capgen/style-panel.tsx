@@ -1,7 +1,5 @@
 "use client";
 
-import { useState } from "react";
-import { LiquidMetalButton } from "./liquid-metal-button";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
@@ -16,11 +14,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { CAPGEN_FONTS } from "@/lib/languages";
-import type { CaptionPosition, CaptionStyle, CaptionTemplate } from "@/lib/captions";
+import { CAPGEN_FONTS, getFontFamily } from "@/lib/languages";
+import {
+  CINEMATIC_PRESETS,
+  DEFAULT_STYLE,
+  type CaptionPosition,
+  type CaptionStyle,
+  type CinematicPresetId,
+} from "@/lib/captions";
 import { Bold, Italic, CaseSensitive, AlignStartVertical, AlignCenter, AlignEndVertical, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { motion, AnimatePresence } from "framer-motion";
 
 type Props = {
   style: CaptionStyle;
@@ -31,71 +34,27 @@ type Props = {
   onWordsPerCaptionChange?: (v: number) => void;
 };
 
-const HYPER_STYLES = [
-  {
-    id: "plain",
-    label: "PLAIN",
-    preview: { color: "#ffffff", stroke: "none", shadow: "none", font: "normal", family: "Inter" }
-  },
-  {
-    id: "pop-cinematic",
-    label: "POP",
-    preview: { color: "#ffffff", stroke: "1px black", shadow: "0 0 15px rgba(255,255,255,0.3), 0 2px 4px rgba(0,0,0,0.8)", font: "bold", family: "Archivo Black" }
-  },
-  {
-    id: "mr-beast-style",
-    label: "BEAST",
-    preview: { color: "#ffff00", stroke: "1px black", shadow: "0 0 15px rgba(255,255,0,0.4), 0 2px 0px #000", font: "black", family: "Archivo Black", letterSpacing: "1px" }
-  },
-  {
-    id: "minimal-doc",
-    label: "MINIMAL",
-    preview: { color: "#ffffff", stroke: "none", shadow: "0 0 15px rgba(255,255,255,0.2), 0 2px 10px rgba(0,0,0,0.5)", font: "medium", family: "Inter" }
-  },
-  {
-    id: "hormozi-energy",
-    label: "ENERGY",
-    preview: { color: "#cfff00", stroke: "1px black", shadow: "0 0 15px rgba(207,255,0,0.4), 0 2px 0px rgba(0,0,0,0.4)", font: "black", family: "Archivo Black", letterSpacing: "1px" }
-  },
-  {
-    id: "luxury-aesthetic",
-    label: "LUXURY",
-    preview: { color: "#ffffff", stroke: "none", shadow: "0 0 15px rgba(255,255,255,0.3), 0 0 10px rgba(0,0,0,0.6)", font: "normal", family: "Playfair Display", letterSpacing: "2px" }
-  },
-  {
-    id: "cyber-neon",
-    label: "CYBER",
-    preview: { color: "#00ffff", stroke: "none", shadow: "0 0 15px #00ffff, 0 0 5px #00ffff", font: "bold", family: "Russo One" }
-  },
-  {
-    id: "podcast-clean",
-    label: "PODCAST",
-    preview: { color: "#ffffff", stroke: "1px black", shadow: "0 0 15px rgba(255,255,255,0.2), 0 2px 0px rgba(0,0,0,0.7)", font: "semibold", family: "Inter", letterSpacing: "1px" }
-  },
-  {
-    id: "viral-breaking",
-    label: "BREAKING",
-    preview: { color: "#ffffff", stroke: "none", shadow: "0 0 10px rgba(255,0,0,0.5)", font: "black", family: "Archivo Black", bg: "#ff0000" }
-  },
+const HYPER_STYLES: {
+  id: CinematicPresetId;
+}[] = [
+  { id: "clean" },
+  { id: "pop-cinematic" },
+  { id: "mr-beast-style" },
+  { id: "minimal-doc" },
+  { id: "hormozi-energy" },
+  { id: "luxury-aesthetic" },
+  { id: "cyber-neon" },
+  { id: "podcast-clean" },
+  { id: "viral-breaking" },
 ];
 
-const TEMPLATES: { value: CaptionTemplate; label: string; previewType: "text" | "boxed" | "highlight" }[] = [
-  { value: "plain", label: "Plain", previewType: "text" },
-  { value: "active-word", label: "Karaoke", previewType: "highlight" },
-  { value: "boxed", label: "Boxed", previewType: "boxed" },
-  { value: "outline", label: "Outline", previewType: "text" },
+const PREMIUM_STYLES: { id: CinematicPresetId }[] = [
+  { id: "editorial-luxe" },
+  { id: "apple-glass-pill" },
+  { id: "cinema-blur" },
+  { id: "podcast-karaoke" },
+  { id: "minimalist-underline" },
 ];
-
-const ANIMATIONS = [
-  { id: "none", label: "Static", variant: "static" },
-  { id: "pop", label: "Pop", variant: "pop" },
-  { id: "cascade", label: "Cascade", variant: "slide-up" },
-  { id: "slide", label: "Slide", variant: "slide-right" },
-  { id: "bounce", label: "Bounce", variant: "bounce" },
-  { id: "zoom", label: "Zoom", variant: "zoom" },
-  { id: "flip", label: "Flip", variant: "flip" },
-  { id: "blur", label: "Blur", variant: "blur" },
-] as const;
 
 const POSITIONS: { value: CaptionPosition; label: string; icon: React.ReactNode }[] = [
   { value: "top", label: "Top", icon: <AlignStartVertical className="size-4" /> },
@@ -108,172 +67,50 @@ export function StylePanel({
   onChange,
   autoEmojiEnabled,
   onAutoEmojiChange,
-  wordsPerCaption,
-  onWordsPerCaptionChange
+  wordsPerCaption = 3,
+  onWordsPerCaptionChange,
 }: Props) {
-  const [activeCategory, setActiveCategory] = useState<"styles" | "templates" | "animations">("styles");
+  const renderPresetButton = (preset: { id: CinematicPresetId }) => {
+    const isSelected = style.hyperStyleId === preset.id;
+
+    return (
+      <button
+        key={preset.id}
+        type="button"
+        aria-label={`${preset.id.replace(/-/g, " ")} style`}
+        aria-pressed={isSelected}
+        onClick={() => onChange({ hyperStyleId: preset.id })}
+        className={cn(
+          "relative h-11 w-[clamp(120px,18vw,180px)] rounded-lg border transition-all duration-200 overflow-hidden flex items-center justify-center",
+          isSelected
+            ? "border-[#5b5b5f] bg-[#2f2f33] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
+            : "border-[#d7d7d7]/20 bg-[#1f1f22] hover:bg-[#252528] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]",
+        )}
+      >
+        <CinematicStylePreview presetId={preset.id} selected={isSelected} />
+      </button>
+    );
+  };
 
   return (
     <div className="space-y-6">
-      {/* CATEGORY SWITCHER */}
-      <div className="grid grid-cols-3 gap-2 p-1 rounded-xl bg-zinc-950 border-liquid-metal">
-        {(["styles", "templates", "animations"] as const).map((cat) => (
-          <LiquidMetalButton
-            key={cat}
-            label={cat === "styles" ? "Cinematic" : cat === "templates" ? "Templates" : "Animations"}
-            onClick={() => setActiveCategory(cat)}
-            width={100}
-            height={36}
-            className={cn(
-              "transition-all duration-300",
-              activeCategory === cat
-                ? "opacity-100"
-                : "opacity-60 hover:opacity-100"
-            )}
-          />
-        ))}
-      </div>
-
-      {/* DYNAMIC CONTENT AREA */}
-      <div className="relative min-h-[120px]">
-        <AnimatePresence mode="wait">
-          {activeCategory === "styles" && (
-            <motion.div
-              key="styles"
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -5 }}
-              className="grid grid-cols-2 gap-2"
-            >
-              {HYPER_STYLES.map((s) => (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => onChange({ hyperStyleId: s.id === "plain" ? null : s.id })}
-                  className={cn(
-                    "relative h-10 rounded-lg border transition-all overflow-hidden flex items-center justify-center group",
-                    (style.hyperStyleId === s.id || (s.id === "plain" && !style.hyperStyleId))
-                      ? "border-white bg-white shadow-sm ring-1 ring-white"
-                      : "border-zinc-800 bg-zinc-950 hover:bg-zinc-900"
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "text-xs font-bold uppercase tracking-wider transition-colors",
-                      (style.hyperStyleId === s.id || (s.id === "plain" && !style.hyperStyleId))
-                        ? "text-black"
-                        : "text-zinc-400 group-hover:text-white"
-                    )}
-                    style={{
-                      color: (style.hyperStyleId === s.id || (s.id === "plain" && !style.hyperStyleId))
-                        ? "#000"
-                        : s.preview.color,
-                      fontFamily: s.preview.family,
-                      fontWeight: s.preview.font === "bold" || s.preview.font === "black" ? 900 : 400,
-                      textShadow: s.preview.shadow !== "none" ? s.preview.shadow : "none",
-                      letterSpacing: s.preview.letterSpacing || "normal",
-                      backgroundColor: s.preview.bg || "transparent",
-                      padding: s.preview.bg ? "2px 6px" : "0px",
-                      borderRadius: s.preview.bg ? "4px" : "0px"
-                    }}
-                  >
-                    {s.label}
-                  </span>
-                </button>
-              ))}
-            </motion.div>
-          )}
-
-          {activeCategory === "templates" && (
-            <motion.div
-              key="templates"
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -5 }}
-              className="grid grid-cols-2 gap-2"
-            >
-              {TEMPLATES.map((t) => (
-                <button
-                  key={t.value}
-                  type="button"
-                  onClick={() => onChange({ template: t.value })}
-                  className={cn(
-                    "relative h-12 rounded-lg border transition-all overflow-hidden flex items-center justify-center group",
-                    style.template === t.value
-                      ? "border-white bg-white shadow-sm ring-1 ring-white"
-                      : "border-border bg-card hover:bg-accent"
-                  )}
-                >
-                  <div className="flex gap-1 text-[10px] font-bold uppercase">
-                    {t.previewType === "highlight" ? (
-                      <>
-                        <span className={cn(style.template === t.value ? "text-black" : "text-white/50")}>Sly</span>
-                        <span className={cn(style.template === t.value ? "text-black" : "text-yellow-400")}>STYLE</span>
-                      </>
-                    ) : t.previewType === "boxed" ? (
-                      <span className={cn(
-                        "px-1 rounded border",
-                        style.template === t.value ? "border-black text-black bg-transparent" : "border-white text-white bg-white/10"
-                      )}>
-                        {t.label}
-                      </span>
-                    ) : (
-                      <span className={cn(style.template === t.value ? "text-black" : "text-white")}>
-                        {t.label}
-                      </span>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </motion.div>
-          )}
-
-          {activeCategory === "animations" && (
-            <motion.div
-              key="animations"
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -5 }}
-              className="grid grid-cols-2 gap-2"
-            >
-              {ANIMATIONS.map((anim) => (
-                <button
-                  key={anim.id}
-                  type="button"
-                  onClick={() => onChange({ animation: anim.id as any })}
-                  className={cn(
-                    "relative h-12 rounded-lg border transition-all overflow-hidden flex items-center justify-center group",
-                    style.animation === anim.id
-                      ? "border-white bg-white shadow-sm ring-1 ring-white"
-                      : "border-border bg-black hover:bg-accent"
-                  )}
-                >
-                  <motion.span
-                    className={cn(
-                      "text-xs font-bold uppercase",
-                      style.animation === anim.id ? "text-black" : "text-white"
-                    )}
-                    animate={anim.variant === "static" ? {} : {
-                      y: anim.variant === "pop" ? [0, -10, 0] : anim.variant === "slide-up" ? [10, 0] : 0,
-                      x: anim.variant === "slide-right" ? [-10, 0] : 0,
-                      scale: anim.variant === "zoom" ? [0.8, 1.2, 1] : 1,
-                      rotateY: anim.variant === "flip" ? [0, 360] : 0,
-                      filter: anim.variant === "blur" ? ["blur(4px)", "blur(0px)"] : "none",
-                    }}
-                    transition={{
-                      duration: 1,
-                      repeat: Infinity,
-                      ease: "easeInOut",
-                      delay: Math.random() * 0.5,
-                    }}
-                  >
-                    {anim.label}
-                  </motion.span>
-                </button>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
+      <div className="space-y-4">
+        <section aria-label="Caption templates" className="space-y-1.5">
+          <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+            Templates
+          </h3>
+          <div className="grid w-fit max-w-full grid-cols-2 gap-1.5">
+            {HYPER_STYLES.map(renderPresetButton)}
+          </div>
+        </section>
+        <section aria-label="Premium Studio caption presets" className="space-y-1.5">
+          <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+            Premium Studio
+          </h3>
+          <div className="grid w-fit max-w-full grid-cols-2 gap-1.5">
+            {PREMIUM_STYLES.map(renderPresetButton)}
+          </div>
+        </section>
       </div>
 
       {/* CORE SETTINGS (STAY VISIBLE) */}
@@ -338,29 +175,9 @@ export function StylePanel({
           </div>
         </div>
 
-        {/* Caption Speed */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <Label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-              Caption Speed
-            </Label>
-            <span className="text-[10px] font-bold text-primary">
-              {style.captionSpeed ? `${style.captionSpeed}x` : "1.0x"}
-            </span>
-          </div>
-          <Slider
-            min={0.5}
-            max={3.0}
-            step={0.1}
-            value={[style.captionSpeed || 1.0]}
-            onValueChange={(v) => onChange({ captionSpeed: v[0] })}
-          />
-        </div>
-
         {/* Colors */}
         <div className="grid grid-cols-3 gap-2">
           <ColorField label="Text" value={style.textColor} onChange={(v) => onChange({ textColor: v })} />
-          <ColorField label="High" value={style.highlightColor} onChange={(v) => onChange({ highlightColor: v })} />
           <ColorField label="Box" value={style.bgColor} onChange={(v) => onChange({ bgColor: v })} />
         </div>
 
@@ -494,6 +311,81 @@ function ColorField({
       </div>
     </div>
   );
+}
+
+function CinematicStylePreview({ presetId, selected }: { presetId: CinematicPresetId; selected: boolean }) {
+  const style = { ...DEFAULT_STYLE, ...CINEMATIC_PRESETS[presetId] };
+  const presetNames: Record<CinematicPresetId, string> = {
+    clean: "Clean",
+    "pop-cinematic": "Pop",
+    "mr-beast-style": "Mr. Beast",
+    "minimal-doc": "Minimal",
+    "hormozi-energy": "Hormozi",
+    "luxury-aesthetic": "Luxury",
+    "cyber-neon": "Cyber",
+    "podcast-clean": "Podcast",
+    "viral-breaking": "Breaking",
+    "editorial-luxe": "Editorial Luxe",
+    "apple-glass-pill": "Apple Glass Pill",
+    "cinema-blur": "Cinema Blur",
+    "podcast-karaoke": "Podcast Karaoke",
+    "minimalist-underline": "Minimalist Underline",
+  };
+  const previewText = style.uppercase
+    ? presetNames[presetId].toUpperCase()
+    : presetNames[presetId];
+
+  return (
+    <span
+      className="inline-flex max-w-full items-center justify-center gap-[0.3em] rounded px-1 py-0.5 text-[11px] leading-none"
+      style={{
+        backgroundColor: style.bgOpacity > 0
+          ? hexWithOpacity(style.bgColor, style.bgOpacity / 100)
+          : style.animationType === "glass-pill"
+            ? style.pillColor ?? "rgba(20,20,22,0.72)"
+            : selected
+              ? "rgba(255,255,255,0.03)"
+              : "transparent",
+        border: style.pillBorder && style.animationType === "glass-pill"
+          ? `1px solid ${style.pillBorder}`
+          : selected
+            ? "1px solid rgba(255,255,255,0.08)"
+            : undefined,
+        borderRadius: style.animationType === "glass-pill"
+          ? `${style.pillBorderRadius ?? 8}px`
+          : style.bgOpacity > 0 ? "4px" : selected ? "6px" : undefined,
+        padding: style.animationType === "glass-pill" || style.bgOpacity > 0 || selected
+          ? "3px 6px"
+          : undefined,
+        color: style.textColor,
+        fontFamily: getFontFamily(style.fontFamily),
+        fontSize: "11px",
+        fontWeight: style.fontWeight ?? (style.bold ? 800 : 500),
+        fontStyle: style.italic ? "italic" : "normal",
+        textTransform: style.uppercase ? "uppercase" : "none",
+        letterSpacing: `${style.letterSpacing}${style.letterSpacingUnit ?? "px"}`,
+        textShadow: selected ? "0 2px 10px rgba(0,0,0,0.28)" : style.textShadow ?? "0 1px 2px rgba(0,0,0,0.75), 0 0 5px rgba(0,0,0,0.4)",
+        boxShadow: selected && style.animationType === "glass-pill"
+          ? "0 0 0 1px rgba(255,255,255,0.08), 0 8px 18px rgba(0,0,0,0.18)"
+          : selected && style.animationType === "underline"
+            ? `0 0 0 1px ${style.accentColor ?? "#818CF8"}`
+            : undefined,
+      }}
+    >
+      {previewText}
+    </span>
+  );
+}
+
+function hexWithOpacity(hex: string, opacity: number) {
+  const value = hex.replace("#", "");
+  const normalized = value.length === 3
+    ? value.split("").map((character) => character + character).join("")
+    : value;
+  const red = parseInt(normalized.slice(0, 2), 16);
+  const green = parseInt(normalized.slice(2, 4), 16);
+  const blue = parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, ${Math.max(0, Math.min(1, opacity))})`;
 }
 
 function ToggleBtn({

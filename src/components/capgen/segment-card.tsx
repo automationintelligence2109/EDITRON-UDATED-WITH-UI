@@ -7,6 +7,7 @@ import { X, Play, RefreshCw, Check, Film, Upload, Sparkles, Search, Loader2 } fr
 import { cn } from "@/lib/utils";
 import { formatClock } from "@/lib/captions";
 import { BROLL_CONFIG } from "@/lib/broll-config";
+import { isBrollImage } from "@/lib/broll";
 import { toast } from "@/hooks/use-toast";
 import type { CaptionSegment } from "@/lib/captions";
 import type { BRollClip } from "@/lib/broll";
@@ -117,11 +118,22 @@ export function SegmentCard({
 
       const data = await res.json();
       if (data.success) {
-        setTrimmingClip(data.clip);
         toast({
           title: "Upload successful",
-          description: "Now select the part of the video you want to use.",
+          description: data.clip.mediaType === "image"
+            ? "Image B-roll added to this segment."
+            : "Now select the part of the video you want to use.",
         });
+        if (data.clip.mediaType === "image") {
+          onAssignBroll(segment.id, {
+            ...data.clip,
+            windowId: `user-upload-${segment.id}`,
+            start: segment.start,
+            end: Math.max(segment.end, segment.start + 3),
+          });
+        } else {
+          setTrimmingClip(data.clip);
+        }
       } else {
         toast({
           title: "Upload failed",
@@ -225,8 +237,13 @@ export function SegmentCard({
             {broll ? (
               <div className="flex items-center gap-4">
                 <div
-                  className="relative h-14 w-24 overflow-hidden rounded-lg border border-border bg-black cursor-pointer hover:border-primary transition-colors"
-                  onClick={() => setTrimmingClip(broll)}
+                  className={cn(
+                    "relative h-14 w-24 overflow-hidden rounded-lg border border-border bg-black transition-colors",
+                    !isBrollImage(broll) && "cursor-pointer hover:border-primary",
+                  )}
+                  onClick={() => {
+                    if (!isBrollImage(broll)) setTrimmingClip(broll);
+                  }}
                 >
                   <img
                     src={broll.thumbnail}
@@ -318,7 +335,7 @@ export function SegmentCard({
             )}
           </div>
 
-          {broll && (
+          {broll && !isBrollImage(broll) && (
             <Button
               variant="outline"
               size="sm"

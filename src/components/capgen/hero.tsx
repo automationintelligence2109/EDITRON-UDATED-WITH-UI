@@ -13,18 +13,9 @@ const HERO_INTL = INTERNATIONAL_LANGUAGES.slice(0, 12);
 
 export function Hero({ onOpenStudio }: { onOpenStudio?: () => void }) {
   const [tab, setTab] = useState<"indian" | "international">("indian");
-  const [activeWord, setActiveWord] = useState(2);
   const [timer, setTimer] = useState("0:00");
 
   const chips = tab === "indian" ? HERO_INDIAN : HERO_INTL;
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setActiveWord((w) => (w + 1) % 4);
-    }, 900);
-
-    return () => clearInterval(interval);
-  }, []);
 
   useEffect(() => {
     const start = Date.now();
@@ -200,22 +191,14 @@ export function Hero({ onOpenStudio }: { onOpenStudio?: () => void }) {
                 </div>
               </div>
 
-              {/* Caption overlay — word-by-word active highlight */}
-              <div className="absolute inset-x-4 bottom-12 flex flex-wrap justify-center gap-x-2 gap-y-1 text-center">
-                {["KEEP", "THE", "GOLD", "BABY"].map((word, i) => (
-                  <span
-                    key={i}
-                    className={cn(
-                      "rounded-md px-2 py-1 font-extrabold uppercase transition-all duration-200",
-                      i === activeWord
-                        ? "scale-110 bg-primary text-primary-foreground shadow-lg capgen-active-word"
-                        : "bg-black/60 text-white"
-                    )}
-                    style={{ fontFamily: "var(--font-archivo-black), sans-serif", fontSize: "1.6rem", lineHeight: 1 }}
-                  >
-                    {word}
-                  </span>
-                ))}
+              {/* Caption overlay */}
+              <div className="absolute inset-x-4 bottom-12 flex justify-center text-center">
+                <span
+                  className="rounded-md bg-black/60 px-3 py-2 font-extrabold uppercase text-white shadow-lg"
+                  style={{ fontFamily: "var(--font-archivo-black), sans-serif", fontSize: "1.6rem", lineHeight: 1 }}
+                >
+                  KEEP THE GOLD BABY
+                </span>
               </div>
 
               {/* Time chip */}

@@ -5,4 +5,6 @@ export const BROLL_CONFIG = {
   TARGET_BROLL_INTERVAL: 10, // Average seconds between B-roll clips (e.g., 1 clip every 10s)
   MIN_PAUSE_FOR_BREAK: 0.5, // Seconds of silence to consider a "natural break"
   KEYWORD_MIN_LENGTH: 5, // Length for "high-importance" words
+  MAX_SEARCH_WINDOWS_PER_REQUEST: 20,
+  MAX_SEARCH_WINDOWS_PER_VIDEO: 180,
 };

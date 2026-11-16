@@ -1,402 +1,196 @@
-import { NextRequest, NextResponse } from "next/server";
-import { writeFile, unlink, mkdir, rm, readFile } from "fs/promises";
-import { existsSync } from "fs";
-import { join } from "path";
-import { tmpdir } from "os";
 import { randomUUID } from "crypto";
-import { execFile } from "child_process";
-import { promisify } from "util";
-import Replicate from "replicate";
+import { createWriteStream } from "fs";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
+import { DeleteObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { NextRequest, NextResponse } from "next/server";
+import { db } from "@/lib/db";
+import { getR2Client, getUserR2Prefix } from "@/lib/r2";
+import { checkRateLimit } from "@/lib/request-protection";
+import { ensureGuestUser, getAuthenticatedUserId } from "@/lib/server-auth";
 import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand,
-} from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-
-const execFileAsync = promisify(execFile);
+  enqueueLocalTranscription,
+  shouldUseLocalTranscriptionJobs,
+} from "@/lib/transcription/local-jobs";
+import { getTranscriptionQueue } from "@/lib/transcription/queue";
+import type { TranscriptionJobData } from "@/lib/transcription/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 3600;
+export const maxDuration = 300;
 
-const FFMPEG = process.env.FFMPEG_PATH || "ffmpeg";
-const PYTHON_BIN =
-  process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3");
+const MAX_UPLOAD_BYTES = 150 * 1024 * 1024;
+const INPUT_MIME_TYPES: Record<string, string[]> = {
+  ".mp4": ["video/mp4"],
+  ".mp3": ["audio/mpeg", "audio/mp3"],
+  ".wav": ["audio/wav", "audio/x-wav"],
+  ".m4a": ["audio/mp4", "audio/x-m4a"],
+  ".webm": ["video/webm", "audio/webm"],
+  ".mov": ["video/quicktime", "video/mov"],
+  ".ogg": ["audio/ogg", "application/ogg"],
+  ".aac": ["audio/aac", "audio/x-aac"],
+  ".mkv": ["video/x-matroska"],
+};
 
-type WordItem = { word: string; start: number; end: number };
-type WhisperCaption = { start: number; end: number; text: string };
-
-// Replicate configuration is supplied by Dokploy environment variables.
-// Never hardcode the token or model version in this file.
-// Replicate is initialized inside POST so Next.js can build this route
-// even when runtime environment variables are not available during the build.
-
-function getR2Client() {
-  const endpoint = process.env.R2_ENDPOINT;
-  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-  const bucket = process.env.R2_BUCKET_NAME;
-
-  if (!endpoint || !accessKeyId || !secretAccessKey || !bucket) {
-    throw new Error("Cloudflare R2 environment variables are not configured.");
+async function* readWebFile(file: File): AsyncGenerator<Buffer> {
+  const reader = file.stream().getReader();
+  let completed = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        completed = true;
+        return;
+      }
+      yield Buffer.from(value);
+    }
+  } finally {
+    if (!completed) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
-
-  const client = new S3Client({
-    region: "auto",
-    endpoint,
-    credentials: {
-      accessKeyId,
-      secretAccessKey,
-    },
-  });
-
-  return { client, bucket };
 }
 
-function logTiming(label: string, startedAt: number) {
-  console.log(`[Transcribe] ${label}: ${Date.now() - startedAt} ms`);
+function getWordsPerCaption(value: FormDataEntryValue | null): number {
+  if (typeof value !== "string") return 5;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) ? Math.min(12, Math.max(1, parsed)) : 5;
 }
 
-/**
- * Turns Replicate's chunk, word, or segment output into individual words.
- * The video Whisper model returns chunks whose `text` can contain many words.
- */
-function toWords(output: any): WordItem[] {
-  const words: WordItem[] = [];
-
-  const addTimedText = (textValue: unknown, startValue: unknown, endValue: unknown) => {
-    const text = String(textValue ?? "").trim();
-    if (!text) return;
-
-    const tokens = text.split(/\s+/).filter(Boolean);
-    const start = Number.isFinite(Number(startValue)) ? Number(startValue) : 0;
-    const rawEnd = Number(endValue);
-    const end = Number.isFinite(rawEnd) && rawEnd >= start ? rawEnd : start;
-    const duration = Math.max(0, end - start);
-    const step = tokens.length > 0 ? duration / tokens.length : 0;
-
-    tokens.forEach((token, index) => {
-      words.push({
-        word: token,
-        start: +(start + step * index).toFixed(3),
-        end: +(start + step * (index + 1)).toFixed(3),
-      });
-    });
-  };
-
-  // Whisper responses may return chunks like:
-  // { text: "many words here", timestamp: [start, end] }
-  if (Array.isArray(output?.chunks) && output.chunks.length > 0) {
-    for (const chunk of output.chunks) {
-      const timestamp = Array.isArray(chunk.timestamp) ? chunk.timestamp : [];
-      addTimedText(chunk.text, timestamp[0], timestamp[1]);
-    }
-    return words;
-  }
-
-  // Some Whisper responses return individual word objects.
-  if (Array.isArray(output?.words) && output.words.length > 0) {
-    for (const item of output.words) {
-      const text = String(item.word ?? item.text ?? "").trim();
-      if (!text) continue;
-      words.push({
-        word: text,
-        start: Number(item.start ?? item.timestamp?.[0] ?? 0),
-        end: Number(item.end ?? item.timestamp?.[1] ?? item.start ?? 0),
-      });
-    }
-    return words;
-  }
-
-  // Fallback for regular segment responses.
-  const segments: any[] = Array.isArray(output?.segments) ? output.segments : [];
-  for (const segment of segments) {
-    const timestamp = Array.isArray(segment.timestamp) ? segment.timestamp : [];
-    addTimedText(
-      segment.text,
-      segment.start ?? timestamp[0],
-      segment.end ?? timestamp[1]
+export async function POST(request: NextRequest) {
+  const userId = await getAuthenticatedUserId();
+  if (!userId) {
+    return NextResponse.json(
+      { success: false, error: "Sign in before processing a video." },
+      { status: 401 },
     );
   }
 
-  // Final fallback when the model returns only plain text.
-  if (words.length === 0) {
-    const text = String(output?.text ?? output ?? "").trim();
-    addTimedText(text, 0, 0);
+  const hourlyLimit = Number.parseInt(process.env.MAX_TRANSCRIPTIONS_PER_HOUR || "5", 10);
+  let rateLimit: Awaited<ReturnType<typeof checkRateLimit>>;
+  try {
+    rateLimit = await checkRateLimit(
+      `transcribe:${userId}`,
+      Number.isInteger(hourlyLimit) && hourlyLimit > 0 ? Math.min(hourlyLimit, 100) : 5,
+      60 * 60_000,
+    );
+  } catch (error) {
+    console.error("[Transcribe] Rate limiter unavailable:", error);
+    return NextResponse.json(
+      { success: false, error: "Video processing is temporarily unavailable." },
+      { status: 503 },
+    );
+  }
+  if (!rateLimit.allowed) {
+    return NextResponse.json(
+      { success: false, error: "Processing limit reached. Please try again later." },
+      { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } },
+    );
   }
 
-  return words;
-}
-
-/** Groups words into caption lines of N words each. */
-function groupIntoCaptions(words: WordItem[], wordsPerCaption: number): WhisperCaption[] {
-  const captions: WhisperCaption[] = [];
-  for (let i = 0; i < words.length; i += wordsPerCaption) {
-    const chunk = words.slice(i, i + wordsPerCaption);
-    captions.push({
-      start: chunk[0].start,
-      end: chunk[chunk.length - 1].end,
-      text: chunk.map((w) => w.word).join(" "),
-    });
+  const contentLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES + 1024 * 1024) {
+    return NextResponse.json(
+      { success: false, error: "Video and audio files cannot exceed 150 MB." },
+      { status: 413 },
+    );
   }
-  return captions;
-}
 
-export async function POST(req: NextRequest) {
-  const startedAt = Date.now();
-  let tempPath: string | null = null;
-  let cutOutputDir: string | null = null;
-  let audioPath: string | null = null;
-  let processedVideoPath: string | null = null;
-  let audioObjectKey: string | null = null;
-  let audioR2Client: S3Client | null = null;
-  let audioR2Bucket: string | null = null;
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return NextResponse.json({ success: false, error: "Invalid multipart upload." }, { status: 400 });
+  }
+
+  const file = formData.get("file");
+  if (!(file instanceof File)) {
+    return NextResponse.json({ success: false, error: "No file provided." }, { status: 400 });
+  }
+  const sourceName = file.name.trim().slice(0, 255);
+  const extension = sourceName.slice(sourceName.lastIndexOf(".")).toLowerCase();
+  if (!sourceName || !INPUT_MIME_TYPES[extension] ||
+    (file.type && !INPUT_MIME_TYPES[extension].includes(file.type))) {
+    return NextResponse.json({ success: false, error: "Unsupported file type." }, { status: 415 });
+  }
+  if (file.size === 0 || file.size > MAX_UPLOAD_BYTES) {
+    return NextResponse.json(
+      { success: false, error: "Video and audio files must be between 1 byte and 150 MB." },
+      { status: 413 },
+    );
+  }
+
+  const modeValue = formData.get("mode");
+  const mode = modeValue === "translate" ? "translate" : "transcribe";
+  const wordsPerCaption = getWordsPerCaption(formData.get("words_per_caption"));
+  const jobId = randomUUID();
+  const sourceKey = `${getUserR2Prefix(userId)}transcription-input/${jobId}${extension}`;
+  const r2 = getR2Client();
+  let uploaded = false;
+  let jobCreated = false;
 
   try {
-    const formData = await req.formData();
-    const file = formData.get("file");
-    const language = (formData.get("language") as string | null) || "en";
-    const mode = (formData.get("mode") as string) === "translate" ? "translate" : "transcribe";
-    const wpcRaw = formData.get("words_per_caption");
-    const wordsPerCaption = wpcRaw
-      ? Math.max(1, Math.min(12, parseInt(wpcRaw as string, 10) || 6))
-      : 6;
-
-    if (!file || !(file instanceof File)) {
-      return NextResponse.json({ success: false, error: "No file provided." }, { status: 400 });
-    }
-
-    // Save uploaded file to a temp path
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const ext = (file.name || "audio.wav").includes(".")
-      ? (file.name as string).slice(file.name.lastIndexOf("."))
-      : ".wav";
-    const tempId = randomUUID();
-    const tempDir = join(tmpdir(), "capgen-uploads");
-    if (!existsSync(tempDir)) await mkdir(tempDir, { recursive: true });
-    tempPath = join(tempDir, `${tempId}${ext}`);
-    await writeFile(tempPath, buffer);
-
-    // --- STEP 1: CUT ENGINE ---
-    const cutBridgePath = join(process.cwd(), "src", "backend", "cut_engine", "bridge.py");
-    cutOutputDir = join(tempDir, tempId);
-
-    const cutStartedAt = Date.now();
-
-    const { stdout: cutStdout, stderr: cutStderr } = await execFileAsync(
-      PYTHON_BIN,
-      [cutBridgePath, tempPath, cutOutputDir],
-      { env: { ...process.env, PYTHONUNBUFFERED: "1" }, maxBuffer: 10 * 1024 * 1024 }
-    ).catch((err) => {
-      console.error("[CutEngine] Error:", err?.stderr || err?.message || err);
-      throw new Error("AI Cut Engine failed to process video. Please try again.");
-    });
-
-    let cutResult: any;
-    try {
-      cutResult = JSON.parse(cutStdout.trim().split("\n").pop() as string);
-    } catch {
-      throw new Error("Cut Engine returned invalid output.");
-    }
-    if (!cutResult.success) {
-      throw new Error(cutResult.error || "AI Cut Engine failed.");
-    }
-
-    processedVideoPath = cutResult.output_path;
-    if (cutStderr?.trim()) {
-      console.log("[CutEngine stderr]");
-      console.log(cutStderr.trim());
-    }
-
-    if (cutResult.timings) {
-      console.log(
-        "[CutEngine timings]",
-        JSON.stringify(cutResult.timings)
-      );
-    }
-
-    logTiming("cut engine finished", cutStartedAt);
-
-    // --- STEP 2: EXTRACT 16kHz MONO AUDIO ---
-    audioPath = join(tempDir, `${tempId}.wav`);
-    const audioStartedAt = Date.now();
-    await execFileAsync(FFMPEG, [
-      "-y",
-      "-hide_banner",
-      "-loglevel", "error",
-      "-i", processedVideoPath,
-      "-map", "0:a:0",
-      "-vn",
-      "-sn",
-      "-c:a", "pcm_s16le",
-      "-ac", "1",
-      "-ar", "16000",
-      audioPath,
-    ], { maxBuffer: 10 * 1024 * 1024 }).catch((err) => {
-      console.error("[Audio] FFmpeg error:", err?.stderr || err?.message || err);
-      throw new Error("Could not extract audio from the video.");
-    });
-    logTiming("audio extracted", audioStartedAt);
-
-    // --- STEP 3: TRANSCRIPTION (Replicate) ---
-    // Upload the extracted WAV to R2 and give Replicate a signed URL.
-    // This avoids putting the entire audio file into a large Base64 request.
-    const audioR2StartedAt = Date.now();
-    const audioBuffer = await readFile(audioPath);
-    logTiming(`audio file read (${Math.round(audioBuffer.length / 1024)} KB)`, audioR2StartedAt);
-    const audioR2 = getR2Client();
-    audioR2Client = audioR2.client;
-    audioR2Bucket = audioR2.bucket;
-    audioObjectKey = `transcription-input/${randomUUID()}.wav`;
-    const r2UploadStartedAt = Date.now();
-
-    await audioR2Client.send(
-      new PutObjectCommand({
-        Bucket: audioR2Bucket,
-        Key: audioObjectKey,
-        Body: audioBuffer,
-        ContentType: "audio/wav",
-      })
-    );
-
-    logTiming("temporary audio R2 upload finished", r2UploadStartedAt);
-
-    const signedUrlStartedAt = Date.now();
-    const audioUrl = await getSignedUrl(
-      audioR2Client,
-      new GetObjectCommand({
-        Bucket: audioR2Bucket,
-        Key: audioObjectKey,
-      }),
-      { expiresIn: 900 }
-    );
-    
-    logTiming("signed audio URL created", signedUrlStartedAt);
-
-    const inputInput: Record<string, unknown> = {
-      // OpenAI Whisper expects the media URL in the `audio` input.
-      audio: audioUrl,
-      
-      translate: mode === "translate",
-      transcription: "plain text",
-      temperature: 0,
-      condition_on_previous_text: true,
-      // The model's chunk timestamps are returned as [start, end] arrays.
-      // Word mode causes this model to fail internally with a tuple error.
-      
-    };
-    // Leave language unset so the Replicate model detects it automatically.
-    // Regional browser values such as "en-in" are not accepted by this model.
-    
-    
-
-    // The complete Replicate model version is supplied through Dokploy.
-    const replicateToken = process.env.REPLICATE_API_TOKEN;
-    const replicateModelVersion = process.env.REPLICATE_MODEL_VERSION;
-
-    if (!replicateToken) {
-      throw new Error("REPLICATE_API_TOKEN is not configured at runtime.");
-    }
-
-    if (!replicateModelVersion) {
-      throw new Error("REPLICATE_MODEL_VERSION is not configured at runtime.");
-    }
-
-    const replicate = new Replicate({ auth: replicateToken });
-
-    // Example format: owner/model:version-id
-    let output: any;
-    const replicateStartedAt = Date.now();
-    try {
-      output = await replicate.run(replicateModelVersion, {
-        input: inputInput,
-      });
-      logTiming("Replicate finished", replicateStartedAt);
-    } catch (replicateError: any) {
-      const detail = replicateError?.message || String(replicateError);
-      console.error("[Replicate] Error:", detail);
-      throw new Error(`Replicate transcription failed: ${detail}`);
-    }
-
-    const words = toWords(output);
-    if (words.length === 0) {
-      return NextResponse.json(
-        { success: false, error: "No speech detected in this video." },
-        { status: 422 }
-      );
-    }
-
-    const captions = groupIntoCaptions(words, wordsPerCaption).map((c, i) => ({
-      id: `seg-${i}-${Math.random().toString(36).slice(2, 8)}`,
-      start: c.start,
-      end: c.end,
-      text: c.text,
+    await r2.client.send(new PutObjectCommand({
+      Bucket: r2.bucket,
+      Key: sourceKey,
+      Body: Readable.from(readWebFile(file)),
+      ContentLength: file.size,
+      ContentType: file.type || "application/octet-stream",
     }));
+    uploaded = true;
 
-    const { client: r2Client, bucket: r2Bucket } = getR2Client();
-    const finalR2StartedAt = Date.now();
-    const processedVideoBuffer = await readFile(processedVideoPath);
-    console.log(
-      `[Transcribe] final video size: ${Math.round(
-        processedVideoBuffer.length / 1024 / 1024
-      )} MB`
-    );
-    const videoKey = `processed/${randomUUID()}.mp4`;
-
-    await r2Client.send(
-      new PutObjectCommand({
-        Bucket: r2Bucket,
-        Key: videoKey,
-        Body: processedVideoBuffer,
-        ContentType: "video/mp4",
-      })
-    );
-    logTiming("final R2 upload finished", finalR2StartedAt);
-
-    const tightenedVideoUrl = await getSignedUrl(
-      r2Client,
-      new GetObjectCommand({
-        Bucket: r2Bucket,
-        Key: videoKey,
-      }),
-      { expiresIn: 3600 }
-    );
-
-    return NextResponse.json({
-      success: true,
-      captions,
-      segments: captions,
-      language: output?.detected_language || output?.language || language,
-      captionCount: captions.length,
+    const jobData: TranscriptionJobData = {
+      jobId,
+      userId,
+      sourceKey,
+      sourceName,
       mode,
-      tightenedVideoUrl,
-      elapsedMs: Date.now() - startedAt,
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("[Transcribe] Error:", message);
-    return NextResponse.json(
-      { success: false, error: message, elapsedMs: Date.now() - startedAt },
-      { status: 500 }
-    );
-  } finally {
-    // Clean up temp files so the VPS disk doesn't fill up.
-    for (const p of [tempPath, audioPath, processedVideoPath]) {
-      if (p) await unlink(p).catch(() => {});
-    }
-    if (cutOutputDir) await rm(cutOutputDir, { recursive: true, force: true }).catch(() => {});
+      wordsPerCaption,
+    };
 
-    if (audioObjectKey && audioR2Client && audioR2Bucket) {
-      await audioR2Client.send(
-        new DeleteObjectCommand({
-          Bucket: audioR2Bucket,
-          Key: audioObjectKey,
-        })
-      ).catch((error) => {
-        console.error("[R2] Could not delete temporary audio:", error);
+    if (shouldUseLocalTranscriptionJobs()) {
+      enqueueLocalTranscription(jobData);
+      return NextResponse.json(
+        { success: true, jobId, status: "QUEUED" },
+        { status: 202 },
+      );
+    }
+
+    if (userId.startsWith("guest_")) await ensureGuestUser(userId);
+    await db.transcriptionJob.create({
+      data: {
+        id: jobId,
+        userId,
+        inputKey: sourceKey,
+        sourceName,
+        mode,
+        wordsPerCaption,
+      },
+    });
+    jobCreated = true;
+    await getTranscriptionQueue().add("process", jobData, { jobId });
+
+    return NextResponse.json(
+      { success: true, jobId, status: "QUEUED" },
+      { status: 202 },
+    );
+  } catch (error) {
+    console.error("[Transcribe] Could not queue video:", error);
+    if (jobCreated) {
+      await db.transcriptionJob.delete({ where: { id: jobId } }).catch((cleanupError) => {
+        console.error("[Transcribe] Could not remove incomplete job record:", cleanupError);
       });
     }
+    if (uploaded) {
+      await r2.client.send(new DeleteObjectCommand({
+        Bucket: r2.bucket,
+        Key: sourceKey,
+      })).catch((cleanupError) => {
+        console.error("[Transcribe] Could not remove unqueued upload:", cleanupError);
+      });
+    }
+    return NextResponse.json(
+      { success: false, error: "Could not queue this video. Please try again shortly." },
+      { status: 503 },
+    );
   }
 }
 
@@ -405,6 +199,6 @@ export async function GET() {
     ok: true,
     endpoint: "/api/transcribe",
     method: "POST (multipart/form-data)",
-    features: ["AI Auto-Cut", "word-level timestamps", "Replicate Whisper"],
+    features: ["Queued AI Auto-Cut", "word-level timestamps", "Replicate Whisper"],
   });
 }

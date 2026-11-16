@@ -13,7 +13,7 @@ type Testimonial = {
 
 const TESTIMONIALS: Testimonial[] = [
   {
-    quote: "Cut my captioning time from 40 minutes to 4. The active-word templates are addictive.",
+    quote: "Cut my captioning time from 40 minutes to 4. The cinematic caption styles are addictive.",
     name: "Pranathi Reddy",
     role: "YouTube editor · 480k subs",
     initial: "P",
@@ -49,13 +49,13 @@ const TESTIMONIALS: Testimonial[] = [
     initial: "A",
   },
   {
-    quote: "Drop, pick language, generate, export SRT. That's it. My whole pipeline got 6x faster.",
+    quote: "Drop, generate, export SRT. That's it. My whole pipeline got 6x faster.",
     name: "Sai Teja",
     role: "Shorts editor",
     initial: "S",
   },
   {
-    quote: "The outline template + Anton font = my reel went from 80k to 1.1M views. Templates matter.",
+    quote: "The bold Anton captions made my reel stand out. Great caption styling matters.",
     name: "Dheeraj Mehta",
     role: "Content creator",
     initial: "D",

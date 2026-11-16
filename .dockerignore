@@ -9,6 +9,9 @@ __pycache__
 *.pyc
 *.pyo
 *.log
+/storage/
+/prisma/dev.db
+*.db
 .env
 .env.*
 npm-debug.log*
