@@ -1,4 +1,4 @@
-# CapGen Developer Guide - Cut Engine Module
+# Editron Developer Guide - Cut Engine Module
 # ==============================================================================
 
 ## Overview

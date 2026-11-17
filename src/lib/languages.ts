@@ -1,4 +1,4 @@
-// CapGen language catalog — 14 Indian (+ Romanized variants) + 68 international = 82 total
+// Editron language catalog — 14 Indian (+ Romanized variants) + 68 international = 82 total
 
 export type Language = {
   code: string;
@@ -108,15 +108,15 @@ export function getLanguageByCode(code: string): Language | undefined {
   return ALL_LANGUAGES.find((l) => l.code === code);
 }
 
-// CapGen font catalog — synced with next/font/google loaded in layout.tsx
-export type CapGenFont = {
+// Editron font catalog — synced with next/font/google loaded in layout.tsx
+export type EditronFont = {
   value: string;
   label: string;
   cssFamily: string;
   category: "Viral" | "Modern" | "Playful" | "Elegant" | "Tech";
 };
 
-export const CAPGEN_FONTS: CapGenFont[] = [
+export const EDITRON_FONTS: EditronFont[] = [
   { value: "plus-jakarta-sans", label: "Plus Jakarta Sans", cssFamily: "'Plus Jakarta Sans', sans-serif", category: "Modern" },
   { value: "instrument-serif", label: "Instrument Serif", cssFamily: "'Instrument Serif', serif", category: "Elegant" },
   { value: "space-grotesk", label: "Space Grotesk", cssFamily: "'Space Grotesk', sans-serif", category: "Tech" },
@@ -153,6 +153,6 @@ export const CAPGEN_FONTS: CapGenFont[] = [
 ];
 
 export function getFontFamily(value: string): string {
-  const font = CAPGEN_FONTS.find((f) => f.value === value);
+  const font = EDITRON_FONTS.find((f) => f.value === value);
   return font ? font.cssFamily : "'Inter', sans-serif";
 }

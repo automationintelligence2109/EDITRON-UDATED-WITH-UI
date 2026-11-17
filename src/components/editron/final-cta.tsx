@@ -7,7 +7,7 @@ import { ArrowRight, Sparkles } from "lucide-react";
 export function FinalCta() {
   return (
     <section className="relative overflow-hidden bg-[#0a0a0a] py-20 sm:py-28">
-      <div className="pointer-events-none absolute inset-0 capgen-radial-orange" />
+      <div className="pointer-events-none absolute inset-0 editron-radial-orange" />
       <div className="pointer-events-none absolute -bottom-32 left-1/2 h-64 w-[40rem] -translate-x-1/2 rounded-full bg-[#FF6B1A]/15 blur-3xl" />
 
       <div className="relative mx-auto w-full max-w-4xl px-4 text-center sm:px-6 lg:px-8">
@@ -24,7 +24,7 @@ export function FinalCta() {
 
           <h2 className="text-balance text-4xl font-extrabold leading-[1.05] tracking-tight text-white sm:text-5xl lg:text-6xl">
             Caption the video you{" "}
-            <span className="capgen-gradient-text">shot just now.</span>
+            <span className="editron-gradient-text">shot just now.</span>
           </h2>
 
           <p className="mx-auto mt-5 max-w-xl text-lg text-[#a0a0a0]">

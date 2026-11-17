@@ -20,7 +20,7 @@ const PLANS: Plan[] = [
     name: "Free",
     price: "₹0",
     period: "/mo",
-    blurb: "Try CapGen on a real clip — no card.",
+    blurb: "Try Editron on a real clip — no card.",
     features: [
       "30 minutes / month",
       "82 languages",
@@ -73,7 +73,7 @@ export function Pricing() {
             Pricing
           </div>
           <h2 className="text-balance text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
-            Start free. <span className="capgen-gradient-text">Upgrade when you ship.</span>
+            Start free. <span className="editron-gradient-text">Upgrade when you ship.</span>
           </h2>
           <p className="mx-auto mt-3 max-w-2xl text-base text-[#a0a0a0]">
             No card needed to start. Cancel anytime. Indian pricing, billed in ₹.

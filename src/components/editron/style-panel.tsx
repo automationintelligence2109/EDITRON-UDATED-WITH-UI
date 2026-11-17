@@ -3,7 +3,6 @@
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -14,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { CAPGEN_FONTS, getFontFamily } from "@/lib/languages";
+import { EDITRON_FONTS, getFontFamily } from "@/lib/languages";
 import {
   CINEMATIC_PRESETS,
   DEFAULT_STYLE,
@@ -22,16 +21,12 @@ import {
   type CaptionStyle,
   type CinematicPresetId,
 } from "@/lib/captions";
-import { Bold, Italic, CaseSensitive, AlignStartVertical, AlignCenter, AlignEndVertical, Sparkles } from "lucide-react";
+import { Bold, Italic, CaseSensitive, AlignStartVertical, AlignCenter, AlignEndVertical } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Props = {
   style: CaptionStyle;
   onChange: (patch: Partial<CaptionStyle>) => void;
-  autoEmojiEnabled?: boolean;
-  onAutoEmojiChange?: (v: boolean) => void;
-  wordsPerCaption?: number;
-  onWordsPerCaptionChange?: (v: number) => void;
 };
 
 const HYPER_STYLES: {
@@ -65,10 +60,6 @@ const POSITIONS: { value: CaptionPosition; label: string; icon: React.ReactNode 
 export function StylePanel({
   style,
   onChange,
-  autoEmojiEnabled,
-  onAutoEmojiChange,
-  wordsPerCaption = 3,
-  onWordsPerCaptionChange,
 }: Props) {
   const renderPresetButton = (preset: { id: CinematicPresetId }) => {
     const isSelected = style.hyperStyleId === preset.id;
@@ -81,7 +72,7 @@ export function StylePanel({
         aria-pressed={isSelected}
         onClick={() => onChange({ hyperStyleId: preset.id })}
         className={cn(
-          "relative h-11 w-[clamp(120px,18vw,180px)] rounded-lg border transition-all duration-200 overflow-hidden flex items-center justify-center",
+          "relative h-11 w-full rounded-lg border transition-all duration-200 overflow-hidden flex items-center justify-center",
           isSelected
             ? "border-[#5b5b5f] bg-[#2f2f33] shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]"
             : "border-[#d7d7d7]/20 bg-[#1f1f22] hover:bg-[#252528] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]",
@@ -99,7 +90,7 @@ export function StylePanel({
           <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
             Templates
           </h3>
-          <div className="grid w-fit max-w-full grid-cols-2 gap-1.5">
+          <div className="grid w-full max-w-[366px] grid-cols-2 gap-1.5">
             {HYPER_STYLES.map(renderPresetButton)}
           </div>
         </section>
@@ -107,7 +98,7 @@ export function StylePanel({
           <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
             Premium Studio
           </h3>
-          <div className="grid w-fit max-w-full grid-cols-2 gap-1.5">
+          <div className="grid w-full max-w-[366px] grid-cols-2 gap-1.5">
             {PREMIUM_STYLES.map(renderPresetButton)}
           </div>
         </section>
@@ -128,7 +119,7 @@ export function StylePanel({
               {["Viral", "Modern", "Playful", "Elegant", "Tech"].map((cat) => (
                 <SelectGroup key={cat}>
                   <SelectLabel className="text-primary font-bold">{cat}</SelectLabel>
-                  {CAPGEN_FONTS.filter((f) => f.category === cat).map((f) => (
+                  {EDITRON_FONTS.filter((f) => f.category === cat).map((f) => (
                     <SelectItem key={f.value} value={f.value}>
                       <span style={{ fontFamily: f.cssFamily, fontSize: "15px", fontWeight: 700 }}>
                         {f.label}
@@ -176,26 +167,9 @@ export function StylePanel({
         </div>
 
         {/* Colors */}
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <ColorField label="Text" value={style.textColor} onChange={(v) => onChange({ textColor: v })} />
           <ColorField label="Box" value={style.bgColor} onChange={(v) => onChange({ bgColor: v })} />
-        </div>
-
-        {/* Words per Caption */}
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <Label className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
-              Words / Caption
-            </Label>
-            <span className="text-[10px] font-bold text-primary">{wordsPerCaption}</span>
-          </div>
-          <Slider
-            min={1}
-            max={12}
-            step={1}
-            value={[wordsPerCaption]}
-            onValueChange={(v) => onWordsPerCaptionChange?.(v[0])}
-          />
         </div>
 
         {/* Position & Toggles */}
@@ -248,38 +222,6 @@ export function StylePanel({
           </div>
         </div>
 
-        {/* Auto Emoji */}
-        <div className="mt-6 rounded-xl border border-border bg-background p-3 transition-all group">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className={cn(
-                "p-1.5 rounded-lg transition-colors",
-                autoEmojiEnabled ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"
-              )}>
-                <Sparkles className="size-4" />
-              </div>
-              <Label className={cn(
-                "text-xs font-semibold uppercase tracking-widest transition-colors",
-                autoEmojiEnabled ? "text-foreground" : "text-muted-foreground"
-              )}>
-                Auto Emojis
-              </Label>
-            </div>
-            <Switch
-              checked={autoEmojiEnabled}
-              onCheckedChange={onAutoEmojiChange}
-              className="shrink-0 data-[state=checked]:bg-primary"
-            />
-          </div>
-          <p className={cn(
-            "mt-1 text-[10px] transition-colors",
-            autoEmojiEnabled ? "text-muted-foreground" : "text-muted-foreground/40"
-          )}>
-            {autoEmojiEnabled
-              ? "AI is currently injecting contextual emojis."
-              : "Emojis are disabled. Turn on for automatic injection."}
-          </p>
-        </div>
       </div>
     </div>
   );

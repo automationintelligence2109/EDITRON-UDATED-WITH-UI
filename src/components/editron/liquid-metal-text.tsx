@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
 
 interface LiquidMetalTextProps {
   text: string;
-  fontSize?: number;
+  fontSize?: number | string;
   fontWeight?: number;
   color?: string;
 }
@@ -18,6 +18,7 @@ export function LiquidMetalText({
   fontWeight = 700,
   color = "#666666",
 }: LiquidMetalTextProps) {
+  const textSize = typeof fontSize === "number" ? `${fontSize}px` : fontSize;
   const shaderRef = useRef<HTMLDivElement>(null);
   const shaderMount = useRef<any>(null);
   const [isHovered, setIsHovered] = useState(false);
@@ -112,7 +113,7 @@ export function LiquidMetalText({
             position: "absolute",
             top: 0,
             left: 0,
-            fontSize: `${fontSize}px`,
+            fontSize: textSize,
             fontWeight: fontWeight,
             color: i === 0 ? "rgba(0,0,0,0.8)" : "rgba(0,0,0,0.5)",
             zIndex: 10 + i,
@@ -129,7 +130,7 @@ export function LiquidMetalText({
       <div
         style={{
           position: "relative",
-          fontSize: `${fontSize}px`,
+          fontSize: textSize,
           fontWeight: fontWeight,
           zIndex: 20,
           color: "transparent",
@@ -177,7 +178,7 @@ export function LiquidMetalText({
           position: "absolute",
           top: 0,
           left: 0,
-          fontSize: `${fontSize}px`,
+          fontSize: textSize,
           fontWeight: fontWeight,
           color: "rgba(255,255,255,0.3)",
           zIndex: 30,

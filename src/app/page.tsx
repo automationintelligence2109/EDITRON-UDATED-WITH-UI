@@ -1,4 +1,4 @@
-import { Welcome } from "@/components/capgen/welcome";
+import { Welcome } from "@/components/editron/welcome";
 
 export default function Home() {
   return (

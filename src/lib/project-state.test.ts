@@ -6,7 +6,7 @@ test("loads saved projects while dropping removed caption animation settings", (
   const result = projectSnapshotSchema.safeParse({
     sourceName: "clip.mp4",
     isAudio: false,
-    segments: [],
+    segments: [{ id: "hidden", start: 0, end: 1, text: "Hello", hidden: true }],
     style: {
       fontFamily: "inter",
       fontSize: 24,
@@ -33,4 +33,5 @@ test("loads saved projects while dropping removed caption animation settings", (
   if (!result.success) return;
   assert.equal("animation" in result.data.style, false);
   assert.equal("animationSpeed" in result.data.style, false);
+  assert.equal(result.data.segments[0].hidden, true);
 });

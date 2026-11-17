@@ -1,4 +1,4 @@
-// CapGen AI Hook Title — heuristic fallback generator.
+// Editron AI Hook Title — heuristic fallback generator.
 // Used when no ANTHROPIC_API_KEY is configured, or if the API call fails,
 // so the feature always produces something usable rather than erroring out.
 

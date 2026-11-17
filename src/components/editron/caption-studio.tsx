@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -63,6 +63,7 @@ import {
   type CaptionStyle,
 } from "@/lib/captions";
 import { CaptionPreview } from "./caption-preview";
+import { ProcessingOrb } from "./processing-orb";
 import { StylePanel } from "./style-panel";
 import { SegmentCard } from "./segment-card";
 import {
@@ -84,6 +85,11 @@ import type { ProjectSnapshot } from "@/lib/project-state";
 import { LiquidMetalButton } from "./liquid-metal-button";
 import { cn } from "@/lib/utils";
 import { applyAutoEmojis } from "@/lib/emojis";
+import { getExportDimensions, type ExportQuality } from "@/lib/export-dimensions";
+import { RecordingError, supportedRecordingTypes } from "@/lib/export-recording";
+import { isInterruptedPlayback } from "@/lib/media-playback";
+import { hasUnsavedWorkspaceWork } from "@/lib/workspace-session";
+import { brollBelongsToSegment, regroupCaptions } from "@/lib/caption-regroup";
 
 type Stage = "idle" | "uploading" | "queued" | "transcribing" | "timing" | "done" | "error";
 
@@ -91,31 +97,48 @@ const STAGE_LABELS: Record<Stage, string> = {
   idle: "Idle",
   uploading: "Uploading file…",
   queued: "Waiting for a video worker…",
-  transcribing: "Transcribing speech with Whisper AI…",
+  transcribing: "Processing video…",
   timing: "Aligning word timings…",
   done: "Captions ready",
   error: "Something went wrong",
 };
 
-const PROCESSING_STAGE_LABELS: Record<string, string> = {
-  downloading: "Loading video",
-  starting: "Starting",
-  cutting: "Preparing video",
-  extracting_audio: "Preparing audio",
-  transcribing: "Transcribing speech",
-  saving_video: "Saving processed video",
-  complete: "Complete",
-};
+const PROCESSING_MESSAGES = ["Cooking up your edit", "Making some magic", "Crafting your edit"];
+
+function ProcessingMessage() {
+  const [messageIndex, setMessageIndex] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setMessageIndex((index) => (index + 1) % PROCESSING_MESSAGES.length);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <>
+      <span className="sr-only">Your edit is processing.</span>
+      <p className="mt-3 text-sm font-medium text-zinc-300" aria-hidden="true">
+        {PROCESSING_MESSAGES[messageIndex]}…
+      </p>
+    </>
+  );
+}
 
 const ACCEPTED = ".mp4,.mp3,.wav,.m4a,.webm,.mov,.ogg,.aac,.mkv";
 
 export function CaptionStudio({
   initialFile = null,
   projectId = null,
+  onSavedProjectChange,
+  onUnsavedWorkChange,
 }: {
   initialFile?: File | null;
   projectId?: string | null;
+  onSavedProjectChange?: (projectId: string | null) => void;
+  onUnsavedWorkChange?: (hasUnsavedWork: boolean) => void;
 }) {
+  const reduceMotion = useReducedMotion();
   const [file, setFile] = useState<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState("");
@@ -125,10 +148,9 @@ export function CaptionStudio({
     projectId ? "loading" : "ready",
   );
   const [projectSaveState, setProjectSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveRetry, setSaveRetry] = useState(0);
   const [isAudio, setIsAudio] = useState(false);
   const [stage, setStage] = useState<Stage>("idle");
-  const [processingProgress, setProcessingProgress] = useState(0);
-  const [processingStage, setProcessingStage] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [segments, setSegments] = useState<CaptionSegment[]>([]);
   const [style, setStyle] = useState<CaptionStyle>(DEFAULT_STYLE);
@@ -141,17 +163,20 @@ export function CaptionStudio({
   const [isPlaying, setIsPlaying] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
-  const [activeTab, setActiveTab] = useState<"preview" | "captions" | "style" | "broll">("style");
+  const [activeTab, setActiveTab] = useState<"captions" | "style">("captions");
 
   const [suggestions, setSuggestions] = useState<Record<string, any>>({});
   const skipSuggestionsRef = useRef(false);
+  const suggestionsRequestRef = useRef(0);
+  const pendingSuggestedSegmentIdsRef = useRef<Set<string>>(new Set());
   const skipAutosaveRef = useRef(false);
   const projectIdRef = useRef<string | null>(null);
   const sourceKeyRef = useRef<string | null>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveRevisionRef = useRef(0);
   const projectSnapshotRef = useRef<ProjectSnapshot | null>(null);
 
-  const fetchSuggestions = async () => {
+  const fetchSuggestions = async (requestId: number) => {
     if (!segments.length) return;
 
     const MIN_GAP = 5.0;
@@ -224,8 +249,13 @@ export function CaptionStudio({
       });
     }
 
+    const searchWindows = limitBrollWindows(finalWindows);
+    pendingSuggestedSegmentIdsRef.current = new Set(
+      searchWindows.map((window) => window.id.slice("auto-".length)),
+    );
     try {
-      const results = await fetchBrollSuggestions(limitBrollWindows(finalWindows));
+      const results = await fetchBrollSuggestions(searchWindows);
+      if (requestId !== suggestionsRequestRef.current) return;
       if (results.length) {
         const map: Record<string, any> = {};
         results.forEach(r => {
@@ -242,6 +272,7 @@ export function CaptionStudio({
               autoAssignments.push(assignBrollTransitions({
                 id: `${seg.id}-${clip.id}`,
                 windowId: r.windowId,
+                segmentId: seg.id,
                 start: seg.start,
                 end: Math.max(seg.end, seg.start + 3),
                 source: clip.source,
@@ -263,6 +294,7 @@ export function CaptionStudio({
         }
       }
     } catch (error) {
+      if (requestId !== suggestionsRequestRef.current) return;
       const message = error instanceof Error ? error.message : "Could not load B-roll suggestions.";
       console.error("B-roll fetch failed", error);
       toast({
@@ -270,26 +302,37 @@ export function CaptionStudio({
         description: message,
         variant: "destructive",
       });
+    } finally {
+      if (requestId === suggestionsRequestRef.current) {
+        pendingSuggestedSegmentIdsRef.current.clear();
+      }
     }
   };
 
   useEffect(() => {
-    if (!segments.length) return;
+    if (stage !== "done" || !segments.length) return;
     if (skipSuggestionsRef.current) {
       skipSuggestionsRef.current = false;
       return;
     }
-    fetchSuggestions();
-  }, [segments.length]);
+    const requestId = ++suggestionsRequestRef.current;
+    void fetchSuggestions(requestId);
+    return () => {
+      suggestionsRequestRef.current += 1;
+      pendingSuggestedSegmentIdsRef.current.clear();
+    };
+  }, [stage]);
 
   const [wordsPerCaption, setWordsPerCaption] = useState(5);
+  const [wordsPerCaptionInput, setWordsPerCaptionInput] = useState("5");
+  const [pendingBrollOperations, setPendingBrollOperations] = useState(0);
   const [isExportingVideo, setIsExportingVideo] = useState(false);
-  const [exportQuality, setExportQuality] = useState<"480p" | "720p" | "1080p">("1080p");
-  const [autoEmojiEnabled, setAutoEmojiEnabled] = useState(false);
+  const [exportQuality, setExportQuality] = useState<ExportQuality>("1080p");
   const [exportProgress, setExportProgress] = useState(0);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const loadedInitialFileRef = useRef<File | null>(null);
   const generationRequestIdRef = useRef(0);
@@ -304,7 +347,7 @@ export function CaptionStudio({
     brolls,
     aspectRatio,
     wordsPerCaption,
-    autoEmojiEnabled,
+    autoEmojiEnabled: true,
     brollTransitionsEnabled,
   }), [
     sourceName,
@@ -314,7 +357,6 @@ export function CaptionStudio({
     brolls,
     aspectRatio,
     wordsPerCaption,
-    autoEmojiEnabled,
     brollTransitionsEnabled,
   ]);
 
@@ -335,6 +377,8 @@ export function CaptionStudio({
       return;
     }
 
+    const revision = ++saveRevisionRef.current;
+    setProjectSaveState("saving");
     const timer = window.setTimeout(() => {
       const expectedSourceKey = sourceKey;
       saveQueueRef.current = saveQueueRef.current
@@ -359,15 +403,18 @@ export function CaptionStudio({
               sourceKey: currentSourceKey,
               snapshot,
             });
-            skipAutosaveRef.current = true;
+            if (sourceKeyRef.current !== currentSourceKey) return;
+            skipAutosaveRef.current = revision === saveRevisionRef.current;
             projectIdRef.current = createdProject.id;
             setSavedProjectId(createdProject.id);
+            onSavedProjectChange?.(createdProject.id);
           }
 
-          setProjectSaveState("saved");
+          if (revision === saveRevisionRef.current) setProjectSaveState("saved");
         })
         .catch((error: unknown) => {
           console.error("[CaptionStudio] Project autosave failed:", error);
+          if (revision !== saveRevisionRef.current) return;
           setProjectSaveState("error");
           toast({
             title: "Project could not be saved",
@@ -389,25 +436,31 @@ export function CaptionStudio({
     brolls,
     aspectRatio,
     wordsPerCaption,
-    autoEmojiEnabled,
     brollTransitionsEnabled,
+    onSavedProjectChange,
+    saveRetry,
   ]);
 
-  const handleAutoEmojiChange = useCallback((enabled: boolean) => {
-    setAutoEmojiEnabled(enabled);
-    setSegments((prev) => {
-      return prev.map(s => ({
-        ...s,
-        text: enabled
-          ? applyAutoEmojis(s.text)
-          : s.text.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{1F600}-\u{1F64F}]/gu, "").trim()
-      }));
-    });
-  }, []);
+  useEffect(() => {
+    const hasUnsavedWork = hasUnsavedWorkspaceWork(
+      stage, !!file, !!savedProjectId, projectSaveState,
+    );
+    onUnsavedWorkChange?.(hasUnsavedWork);
+    if (!hasUnsavedWork) return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [stage, file, savedProjectId, projectSaveState, onUnsavedWorkChange]);
 
   const handleFile = useCallback(
     (f: File | null) => {
       if (!f) return;
+      if (hasUnsavedWorkspaceWork(stage, !!file, !!savedProjectId, projectSaveState) &&
+          !window.confirm("Replacing this file will discard unsaved work. Continue?")) return;
+      saveRevisionRef.current += 1;
       generationRequestIdRef.current += 1;
       generationAbortControllerRef.current?.abort();
       generationAbortControllerRef.current = null;
@@ -419,6 +472,7 @@ export function CaptionStudio({
       setSourceKey(null);
       sourceKeyRef.current = null;
       setSavedProjectId(null);
+      onSavedProjectChange?.(null);
       projectIdRef.current = null;
       setProjectSaveState("idle");
       setVideoUrl(url);
@@ -431,14 +485,12 @@ export function CaptionStudio({
       setDuration(0);
       setIsPlaying(false);
       setStage("idle");
-      setProcessingProgress(0);
-      setProcessingStage("");
       setErrorMsg(null);
       setExportMsg(null);
       setExportProgress(0);
       setAspectRatio(16 / 9);
     },
-    [videoUrl]
+    [videoUrl, onSavedProjectChange, stage, file, savedProjectId, projectSaveState]
   );
 
   useEffect(() => {
@@ -462,6 +514,8 @@ export function CaptionStudio({
         setErrorMsg(null);
         setSavedProjectId(project.id);
         projectIdRef.current = project.id;
+        setSourceKey(project.sourceKey);
+        sourceKeyRef.current = project.sourceKey;
         setSourceName(snapshot.sourceName);
         setIsAudio(snapshot.isAudio);
         setSegments(snapshot.segments);
@@ -473,11 +527,11 @@ export function CaptionStudio({
         );
         setAspectRatio(snapshot.aspectRatio);
         setWordsPerCaption(snapshot.wordsPerCaption);
-        setAutoEmojiEnabled(snapshot.autoEmojiEnabled);
+        setWordsPerCaptionInput(String(snapshot.wordsPerCaption));
         setBrollTransitionsEnabled(snapshot.brollTransitionsEnabled ?? true);
         setVideoUrl(savedVideoUrl);
         setStage("done");
-        setActiveTab("style");
+        setActiveTab("captions");
         setProjectLoadState("ready");
         setProjectSaveState("saved");
       })
@@ -536,8 +590,8 @@ export function CaptionStudio({
       stage === "transcribing" ||
       stage === "timing"
     ) return;
+    if (stage === "done") return;
     if (!file) {
-      if (stage === "done" && segments.length > 0 && videoUrl) return;
       setErrorMsg("Upload a file first.");
       setStage("error");
       return;
@@ -545,9 +599,8 @@ export function CaptionStudio({
     const requestId = ++generationRequestIdRef.current;
     const abortController = new AbortController();
     generationAbortControllerRef.current = abortController;
+    videoRef.current?.pause();
     setErrorMsg(null);
-    setProcessingProgress(0);
-    setProcessingStage("");
     setStage("uploading");
 
     try {
@@ -581,12 +634,6 @@ export function CaptionStudio({
         }
         if (requestId !== generationRequestIdRef.current) return;
 
-        setProcessingProgress(
-          typeof statusData.progress === "number" ? statusData.progress : 0,
-        );
-        setProcessingStage(
-          typeof statusData.stage === "string" ? statusData.stage : "",
-        );
         if (statusData.status === "FAILED") {
           throw new Error(statusData.error || "Video processing failed.");
         }
@@ -624,27 +671,21 @@ export function CaptionStudio({
           id: c.id || `seg-${i}-${Math.random().toString(36).slice(2, 8)}`,
           start: c.start,
           end: c.end,
-          text: c.text,
+          text: applyAutoEmojis(c.text),
           words: c.words,
         })
       );
 
-      const segs: CaptionSegment[] = rawSegs.map(s => ({
-        ...s,
-        text: applyAutoEmojis(s.text)
-      }));
-
-      if (segs.length === 0) {
+      if (rawSegs.length === 0) {
         throw new Error("No captions generated. Try a different file with clearer speech.");
       }
 
-      setSegments(segs);
+      setSegments(rawSegs);
       setStage("done");
       setActiveTab("captions");
-      setAutoEmojiEnabled(true);
       toast({
         title: "Captions ready!",
-        description: `${segs.length} caption segments generated.`,
+        description: `${rawSegs.length} caption segments generated.`,
       });
     } catch (err: unknown) {
       if (requestId !== generationRequestIdRef.current) return;
@@ -663,16 +704,16 @@ export function CaptionStudio({
     }
   };
 
-  const updateSegment = (id: string, patch: Partial<CaptionSegment & { deleted?: boolean }>) => {
+  const updateSegment = (id: string, patch: Partial<CaptionSegment>) => {
     setSegments((prev) => prev.map((s) => {
       if (s.id === id) {
         let finalText = patch.text ?? s.text;
-        if (autoEmojiEnabled && patch.text) {
+        if (patch.text) {
           finalText = applyAutoEmojis(finalText);
         }
-        return { ...s, ...patch, text: finalText } as CaptionSegment & { deleted?: boolean };
+        return { ...s, ...patch, text: finalText };
       }
-      return s as CaptionSegment & { deleted?: boolean };
+      return s;
     }));
   };
 
@@ -694,6 +735,7 @@ export function CaptionStudio({
           ...clip,
           id: `${segmentId}-${clip.id}`,
           windowId: windowId,
+          segmentId,
           start: start,
           end: start + duration,
           transitionOrder: previousClip?.transitionOrder ?? clip.transitionOrder,
@@ -749,6 +791,7 @@ export function CaptionStudio({
           assignBrollTransitions({
             id: `${segmentId}-${bestClip.id}`,
             windowId: windowId,
+            segmentId,
             start: start,
             end: start + duration,
             source: bestClip.source,
@@ -844,6 +887,7 @@ export function CaptionStudio({
         assignBrollTransitions({
           id: `${windowId}-${selectedClip.id}`,
           windowId: windowId,
+          segmentId: clip.segmentId,
           start: clip.start,
           end: clip.start + duration,
           source: selectedClip.source,
@@ -860,31 +904,39 @@ export function CaptionStudio({
   };
 
   const commitEdit = (id: string) => {
-    let finalText = editText.trim() || " ";
-    if (autoEmojiEnabled) {
-      finalText = applyAutoEmojis(finalText);
-    }
-    updateSegment(id, { text: finalText });
+    updateSegment(id, { text: editText.trim() || " " });
     setEditingId(null);
     setEditText("");
   };
 
-  const seekTo = (t: number) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = t;
+  const seekTo = (t: number, play = false) => {
+    const video = videoRef.current;
+    if (video) {
+      video.currentTime = t;
       setCurrentTime(t);
-      if (!isPlaying) {
-        videoRef.current.play().catch(() => {});
+      if (play && video.paused) {
+        video.play().catch((error: unknown) => {
+          if (!isInterruptedPlayback(error, video)) {
+            console.error("[CaptionStudio] Playback failed:", error);
+            toast({ title: "Playback failed", description: "Please try playing the video again.", variant: "destructive" });
+          }
+        });
       }
     }
   };
 
   const togglePlay = () => {
-    if (!videoRef.current) return;
-    if (videoRef.current.paused) {
-      videoRef.current.play().catch(() => {});
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      video.play().catch((error: unknown) => {
+        if (!isInterruptedPlayback(error, video)) {
+          console.error("[CaptionStudio] Playback failed:", error);
+          toast({ title: "Playback failed", description: "Please try playing the video again.", variant: "destructive" });
+        }
+      });
     } else {
-      videoRef.current.pause();
+      video.pause();
     }
   };
 
@@ -896,40 +948,70 @@ export function CaptionStudio({
   };
 
   const toggleFullScreen = () => {
-    if (!videoRef.current) return;
+    if (!previewRef.current) return;
     if (!document.fullscreenElement) {
-      videoRef.current.requestFullscreen().catch((err) => {
-        console.error(`Error attempting to enable full-screen mode: ${err.message}`);
+      previewRef.current.requestFullscreen().catch((err: Error) => {
+        console.error("[CaptionStudio] Fullscreen failed:", err);
+        toast({ title: "Fullscreen unavailable", description: err.message, variant: "destructive" });
       });
     } else {
-      document.exitFullscreen();
+      document.exitFullscreen().catch((err: Error) => {
+        console.error("[CaptionStudio] Exiting fullscreen failed:", err);
+        toast({ title: "Could not exit fullscreen", description: err.message, variant: "destructive" });
+      });
     }
   };
 
   const exportSRT = () => {
     if (!segments.length) return;
-    downloadFile("capgen-captions.srt", generateSRT(segments), "application/x-subrip");
+    downloadFile("editron-captions.srt", generateSRT(segments), "application/x-subrip");
   };
 
   const exportVTT = () => {
     if (!segments.length) return;
-    downloadFile("capgen-captions.vtt", generateVTT(segments), "application/x-subrip");
+    downloadFile("editron-captions.vtt", generateVTT(segments), "application/x-subrip");
   };
 
   const exportTXT = () => {
     if (!segments.length) return;
-    downloadFile("capgen-transcript.txt", generateTXT(segments), "text/plain");
+    downloadFile("editron-transcript.txt", generateTXT(segments), "text/plain");
   };
 
-  const exportVideo = async () => {
-    const video = videoRef.current;
-    if (!video || !segments.length || !videoUrl) return;
+  const exportVideo = async (attempt = 0): Promise<void> => {
+    const previewVideo = videoRef.current;
+    if (!previewVideo || !segments.length || !videoUrl || isAudio) return;
 
     setIsExportingVideo(true);
     setExportProgress(0);
     setExportMsg("Preparing canvas…");
 
+    let video = previewVideo;
+    const wasMuted = video.muted;
+    let combinedStream: MediaStream | null = null;
+    let sourceStream: MediaStream | null = null;
+    let recorder: MediaRecorder | null = null;
+    let animationFrame = 0;
+    const brollEls = new Map<string, HTMLVideoElement>();
+    const brollImageEls = new Map<string, HTMLImageElement>();
+    const transitionEls = new Map<string, HTMLVideoElement>();
+    let retry = false;
+    let candidateCount = 0;
+
     try {
+      if (sourceKey) {
+        video = document.createElement("video");
+        video.preload = "auto";
+        video.playsInline = true;
+        video.src = `/api/media?${new URLSearchParams({ key: sourceKey })}`;
+        video.load();
+      } else if (new URL(videoUrl, window.location.href).origin !== window.location.origin) {
+        video = document.createElement("video");
+        video.crossOrigin = "anonymous";
+        video.preload = "auto";
+        video.playsInline = true;
+        video.src = videoUrl;
+        video.load();
+      }
       const exportFontFaces = [
         `500 ${style.fontSize}px "Plus Jakarta Sans"`,
         `italic 400 ${style.fontSize}px "Instrument Serif"`,
@@ -948,35 +1030,49 @@ export function CaptionStudio({
       await document.fonts.ready;
 
       if (!video.videoWidth || !video.videoHeight) {
+        if (video.error) {
+          throw new Error("Video failed to load for export. Check the media server's CORS settings.");
+        }
         await new Promise<void>((resolve, reject) => {
-          const onLoad = () => resolve();
-          const onError = () => reject(new Error("Video failed to load"));
-          video.addEventListener("loadedmetadata", onLoad, { once: true });
-          video.addEventListener("error", onError, { once: true });
-          setTimeout(() => reject(new Error("Video metadata timeout")), 5000);
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error("Video metadata timeout"));
+          }, 10_000);
+          const cleanup = () => {
+            clearTimeout(timeout);
+            video.removeEventListener("loadedmetadata", onLoad);
+            video.removeEventListener("error", onError);
+          };
+          const onLoad = () => { cleanup(); resolve(); };
+          const onError = () => {
+            cleanup();
+            reject(new Error("Video failed to load for export. Check the media server's CORS settings."));
+          };
+          video.addEventListener("loadedmetadata", onLoad);
+          video.addEventListener("error", onError);
         });
       }
 
-      const vw = video.videoWidth || 1280;
-      const vh = video.videoHeight || 720;
-
-      const QUALITY_LONG_SIDE: Record<typeof exportQuality, number> = {
-        "480p": 480,
-        "720p": 720,
-        "1080p": 1080,
-      };
-      const maxDim = QUALITY_LONG_SIDE[exportQuality];
-      let cw: number;
-      let ch: number;
-      if (aspectRatio >= 1) {
-        cw = maxDim;
-        ch = Math.round(maxDim / aspectRatio);
-      } else {
-        ch = maxDim;
-        cw = Math.round(maxDim * aspectRatio);
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const { width: cw, height: ch } = getExportDimensions(vw, vh, exportQuality);
+      if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error("Timed out while loading video frames."));
+          }, 10_000);
+          const cleanup = () => {
+            clearTimeout(timeout);
+            video.removeEventListener("loadeddata", onLoad);
+            video.removeEventListener("error", onError);
+          };
+          const onLoad = () => { cleanup(); resolve(); };
+          const onError = () => { cleanup(); reject(new Error("Could not load video frames.")); };
+          video.addEventListener("loadeddata", onLoad);
+          video.addEventListener("error", onError);
+        });
       }
-      cw = cw % 2 === 0 ? cw : cw + 1;
-      ch = ch % 2 === 0 ? ch : ch + 1;
 
       const canvas = document.createElement("canvas");
       canvas.width = cw;
@@ -984,102 +1080,154 @@ export function CaptionStudio({
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Canvas not supported");
 
-      const canvasStream = canvas.captureStream(30);
-
-      const combinedStream = canvasStream;
+      video.pause();
+      if (video.currentTime !== 0) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(new Error("Timed out while seeking to the start of the video."));
+          }, 10_000);
+          const cleanup = () => {
+            clearTimeout(timeout);
+            video.removeEventListener("seeked", onSeeked);
+            video.removeEventListener("error", onError);
+          };
+          const onSeeked = () => { cleanup(); resolve(); };
+          const onError = () => { cleanup(); reject(new Error("Could not seek to the start of the video.")); };
+          video.addEventListener("seeked", onSeeked);
+          video.addEventListener("error", onError);
+          video.currentTime = 0;
+        });
+      }
+      video.muted = true;
+      ctx.drawImage(video, 0, 0, cw, ch);
       try {
-        const videoEl = video as HTMLVideoElement & { captureStream?: () => MediaStream; mozCaptureHStream?: () => MediaStream };
-        const vStream = videoEl.captureStream?.() || (videoEl as any).mozCaptureStream?.();
-        if (vStream) {
-          const audioTracks = vStream.getAudioTracks();
-          if (audioTracks.length > 0) {
-            audioTracks.forEach((at) => combinedStream.addTrack(at));
-          }
-        }
+        ctx.getImageData(0, 0, 1, 1);
       } catch {
+        throw new Error("This video cannot be exported because its source does not allow canvas access.");
       }
 
-      const mimeCandidates = [
-        "video/webm;codecs=vp9,opus",
-        "video/webm;codecs=vp8,opus",
-        "video/webm;codecs=vp9",
-        "video/webm;codecs=vp8",
-        "video/webm",
-        "video/mp4",
-      ];
-      const mimeType = mimeCandidates.find((m) => MediaRecorder.isTypeSupported(m)) || "video/webm";
-      const fileExt = mimeType.includes("mp4") ? "mp4" : "webm";
+      combinedStream = canvas.captureStream(30);
+      try {
+        const videoEl = video as HTMLVideoElement & {
+          captureStream?: () => MediaStream;
+          mozCaptureStream?: () => MediaStream;
+        };
+        sourceStream = videoEl.captureStream?.() || videoEl.mozCaptureStream?.() || null;
+        if (sourceStream) {
+          const audioTracks = sourceStream.getAudioTracks();
+          if (audioTracks.length > 0) {
+            for (const track of audioTracks) combinedStream.addTrack(track);
+          } else {
+            toast({
+              title: "Audio may be missing",
+              description: "The browser did not provide an audio track for this export.",
+              variant: "destructive",
+            });
+          }
+        } else {
+          throw new Error("This browser cannot capture the video audio.");
+        }
+      } catch (error) {
+        console.error("[exportVideo] Audio capture failed", error);
+        throw new Error("This browser cannot capture the video audio. Try another browser.");
+      }
 
-      const recorder = new MediaRecorder(combinedStream, {
-        mimeType,
-        videoBitsPerSecond:
-          exportQuality === "1080p" ? 8_000_000 : exportQuality === "720p" ? 5_000_000 : 2_500_000,
-      });
+      if (typeof MediaRecorder === "undefined") {
+        throw new Error("This browser does not support video recording.");
+      }
+      const mimeCandidates = supportedRecordingTypes(
+        (type) => MediaRecorder.isTypeSupported(type),
+        combinedStream.getAudioTracks().length > 0,
+      );
+      candidateCount = mimeCandidates.length;
+      const mimeType = mimeCandidates[attempt];
+      if (!mimeType) throw new Error("This browser does not support video recording.");
+
+      try {
+        recorder = new MediaRecorder(combinedStream, {
+          mimeType,
+          videoBitsPerSecond:
+            exportQuality === "4k" ? 30_000_000 : exportQuality === "1080p" ? 8_000_000 : exportQuality === "720p" ? 5_000_000 : 2_500_000,
+        });
+      } catch (error) {
+        throw new RecordingError(`Could not initialize ${mimeType}: ${error instanceof Error ? error.message : String(error)}`);
+      }
 
       const chunks: Blob[] = [];
+      let recordingError: Error | null = null;
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunks.push(e.data);
       };
+      recorder.onerror = (event) => {
+        const detail = "error" in event && event.error instanceof Error
+          ? event.error.message : "The encoder could not record this video.";
+        recordingError = new RecordingError(`${mimeType}: ${detail}`);
+      };
 
       const done = new Promise<Blob>((resolve) => {
-        recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+        recorder!.onstop = () => resolve(new Blob(chunks, { type: recorder!.mimeType || mimeType }));
       });
 
-      video.pause();
-      video.currentTime = 0;
-      video.muted = true;
-      await new Promise((r) => setTimeout(r, 100));
-
-      const totalDuration = video.duration || segments[segments.length - 1]?.end || 10;
+      const totalDuration = video.duration;
+      if (!Number.isFinite(totalDuration) || totalDuration <= 0) {
+        throw new Error("Cannot export a video without a valid duration.");
+      }
 
       const fontFamilyCss = getFontFamily(style.fontFamily);
       const fontWeight = String(style.fontWeight ?? (style.bold ? 800 : 500));
       const fontStyle = style.italic ? "italic" : "normal";
 
-      const brollEls = new Map<string, HTMLVideoElement>();
-      const brollImageEls = new Map<string, HTMLImageElement>();
-      const transitionEls = new Map<string, HTMLVideoElement>();
-      let brollTainted = false;
       let transitionLoadFailed = false;
       let lastActiveBrollId: string | null = null;
       let lastActiveTransitionKey: string | null = null;
       let lastActiveTransitionAssetId: string | null = null;
+      const verifiedCanvasSources = new Set<string>();
       if (brolls.length) {
         setExportMsg("Loading b-roll clips…");
         await Promise.all(
           brolls.map(
             (b) => {
               if (isBrollImage(b)) {
-                return new Promise<void>((resolve) => {
+                return new Promise<void>((resolve, reject) => {
                   if (brollImageEls.has(b.previewUrl)) return resolve();
                   const image = document.createElement("img");
                   image.crossOrigin = "anonymous";
-                  const timeout = setTimeout(resolve, 4000);
+                  const timeout = setTimeout(() => reject(new Error("Timed out loading a B-roll image.")), 15_000);
                   image.addEventListener("load", () => {
                     clearTimeout(timeout);
                     resolve();
                   }, { once: true });
                   image.addEventListener("error", () => {
                     clearTimeout(timeout);
-                    resolve();
+                    reject(new Error("Could not load a B-roll image for export."));
                   }, { once: true });
                   brollImageEls.set(b.previewUrl, image);
-                  image.src = b.previewUrl;
+                  image.src = b.sourceKey
+                    ? `/api/media?${new URLSearchParams({ key: b.sourceKey })}`
+                    : b.previewUrl;
                 });
               }
-              return new Promise<void>((resolve) => {
+              return new Promise<void>((resolve, reject) => {
                 if (brollEls.has(b.previewUrl)) return resolve();
                 const el = document.createElement("video");
                 el.crossOrigin = "anonymous";
-                el.src = b.previewUrl;
+                el.src = b.sourceKey
+                  ? `/api/media?${new URLSearchParams({ key: b.sourceKey })}`
+                  : b.previewUrl;
                 el.muted = true;
                 el.loop = false;
                 el.playsInline = true;
                 el.preload = "auto";
-                const done = () => resolve();
-                el.addEventListener("loadeddata", done, { once: true });
-                el.addEventListener("error", done, { once: true });
-                setTimeout(done, 4000);
+                const timeout = setTimeout(() => reject(new Error("Timed out loading a B-roll video.")), 15_000);
+                el.addEventListener("loadeddata", () => {
+                  clearTimeout(timeout);
+                  resolve();
+                }, { once: true });
+                el.addEventListener("error", () => {
+                  clearTimeout(timeout);
+                  reject(new Error("Could not load a B-roll video for export."));
+                }, { once: true });
                 brollEls.set(b.previewUrl, el);
                 el.load();
               });
@@ -1140,22 +1288,27 @@ export function CaptionStudio({
 
       setExportMsg("Recording…");
 
-      recorder.start(100);
+      try {
+        recorder.start(100);
+      } catch (error) {
+        throw new RecordingError(`Could not start ${mimeType}: ${error instanceof Error ? error.message : String(error)}`);
+      }
       await video.play();
 
       const renderFrame = () => {
         if (video.paused || video.ended) {
+          if (!recordingError && !video.ended && video.currentTime < totalDuration - 0.1) {
+            recordingError = new Error("Export stopped before the end of the video.");
+          }
           finishExport();
           return;
         }
         const t = video.currentTime;
 
-        const activeTransition = brollTainted || !brollTransitionsEnabled
+        const activeTransition = !brollTransitionsEnabled
           ? null
           : activeBrollTransitionAt(brolls, t, totalDuration);
-        const activeBroll = !brollTainted
-          ? activeBrollAt(brolls, t)
-          : null;
+        const activeBroll = activeBrollAt(brolls, t);
         const brollEl = activeBroll && !isBrollImage(activeBroll)
           ? brollEls.get(activeBroll.previewUrl)
           : undefined;
@@ -1175,6 +1328,7 @@ export function CaptionStudio({
           if (brollEl) {
             brollEl.currentTime = activeBroll?.trimStart ?? 0;
             brollEl.play().catch((error: unknown) => {
+              if (isInterruptedPlayback(error, brollEl)) return;
               console.error("[exportVideo] B-roll playback failed", error);
             });
           }
@@ -1188,6 +1342,7 @@ export function CaptionStudio({
             brollEl.currentTime = trimStart;
             if (brollEl.ended) {
               brollEl.play().catch((error: unknown) => {
+                if (isInterruptedPlayback(error, brollEl)) return;
                 console.error("[exportVideo] B-roll loop playback failed", error);
               });
             }
@@ -1206,6 +1361,7 @@ export function CaptionStudio({
             transitionEl.playbackRate =
               activeTransition.asset.duration / (activeTransition.end - activeTransition.start);
             transitionEl.play().catch((error: unknown) => {
+              if (isInterruptedPlayback(error, transitionEl)) return;
               console.error("[exportVideo] Transition playback failed", error);
             });
           }
@@ -1213,29 +1369,23 @@ export function CaptionStudio({
           lastActiveTransitionAssetId = activeTransition?.asset.id ?? null;
         }
 
-        try {
-          if (brollImage && brollImage.complete && brollImage.naturalWidth > 0) {
-            drawCover(
-              ctx,
-              brollImage,
-              brollImage.naturalWidth,
-              brollImage.naturalHeight,
-              cw,
-              ch,
-            );
-          } else if (brollEl && brollEl.readyState >= 2) {
-            drawCover(ctx, brollEl, brollEl.videoWidth, brollEl.videoHeight, cw, ch);
-          } else {
-            drawCover(ctx, video, vw, vh, cw, ch);
-          }
-        } catch {
-          brollTainted = true;
+        let canvasSource: string | null = null;
+        if (brollImage && brollImage.complete && brollImage.naturalWidth > 0) {
+          drawCover(ctx, brollImage, brollImage.naturalWidth, brollImage.naturalHeight, cw, ch);
+          canvasSource = activeBroll?.previewUrl ?? null;
+        } else if (brollEl && brollEl.readyState >= 2) {
+          drawCover(ctx, brollEl, brollEl.videoWidth, brollEl.videoHeight, cw, ch);
+          canvasSource = activeBroll?.previewUrl ?? null;
+        } else {
           drawCover(ctx, video, vw, vh, cw, ch);
-          toast({
-            title: "B-roll export limited",
-            description: "One or more b-roll sources blocked canvas capture (CORS). Continuing export without cutaways.",
-            variant: "destructive",
-          });
+        }
+        if (canvasSource && !verifiedCanvasSources.has(canvasSource)) {
+          try {
+            ctx.getImageData(0, 0, 1, 1);
+          } catch {
+            throw new Error("A B-roll source blocks canvas access. Check its CORS settings.");
+          }
+          verifiedCanvasSources.add(canvasSource);
         }
 
         if (activeTransition && transitionEl && transitionEl.readyState >= 2) {
@@ -1250,67 +1400,133 @@ export function CaptionStudio({
             ch
           );
           ctx.restore();
+          const transitionSource = activeTransition.asset.src;
+          if (!verifiedCanvasSources.has(transitionSource)) {
+            try {
+              ctx.getImageData(0, 0, 1, 1);
+            } catch {
+              throw new Error("A transition blocks canvas access. Check its CORS settings.");
+            }
+            verifiedCanvasSources.add(transitionSource);
+          }
         }
 
-        const seg = segments.find((s) => t >= s.start && t < s.end);
+        const seg = segments.find((s) => !s.hidden && t >= s.start && t < s.end);
         if (seg) {
-          drawCaption(ctx, seg, cw, ch, style, fontFamilyCss, fontWeight, fontStyle, t, video);
+          drawCaption(ctx, seg, cw, ch, style, fontFamilyCss, fontWeight, fontStyle, t, previewVideo);
         }
 
         setExportProgress(Math.min(100, Math.round((t / totalDuration) * 100)));
 
         if (t < totalDuration) {
-          requestAnimationFrame(renderFrame);
+          animationFrame = requestAnimationFrame(renderSafely);
         } else {
           finishExport();
         }
       };
 
       const finishExport = () => {
-        if (recorder.state !== "inactive") {
+        if (recorder && recorder.state !== "inactive") {
           recorder.stop();
         }
-        video.pause();
-        video.muted = false;
-        brollEls.forEach((el) => {
-          el.pause();
-          el.src = "";
-        });
-        brollImageEls.forEach((image) => {
-          image.src = "";
-        });
-        transitionEls.forEach((el) => {
-          el.pause();
-          el.src = "";
-        });
       };
 
-      requestAnimationFrame(renderFrame);
+      const renderSafely = () => {
+        try {
+          renderFrame();
+        } catch (error) {
+          recordingError = error instanceof Error ? error : new Error("Could not render the video.");
+          finishExport();
+        }
+      };
+      renderSafely();
 
       const blob = await done;
-      combinedStream.getTracks().forEach((t) => t.stop());
+      if (recordingError) throw recordingError;
+      if (blob.size === 0) throw new RecordingError(`${mimeType}: The browser produced an empty video.`);
+      const actualType = blob.type.toLowerCase();
+      const fileExt = actualType.startsWith("video/mp4") ? "mp4"
+        : actualType.startsWith("video/webm") ? "webm" : null;
+      if (!fileExt) throw new Error("The browser produced an unsupported video format.");
 
       setExportMsg("Saving file…");
       setExportProgress(100);
 
       const url = URL.createObjectURL(blob);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const check = document.createElement("video");
+          const timeout = setTimeout(() => finish(new Error("Timed out while checking the exported video.")), 10_000);
+          const finish = (error?: Error) => {
+            clearTimeout(timeout);
+            check.onloadedmetadata = null;
+            check.onerror = null;
+            check.removeAttribute("src");
+            check.load();
+            if (error) reject(error);
+            else resolve();
+          };
+          check.onloadedmetadata = () => {
+            if (!check.videoWidth || !check.videoHeight) {
+              finish(new Error("The exported file does not contain a playable video."));
+            } else {
+              finish();
+            }
+          };
+          check.onerror = () => finish(new Error("The exported video could not be opened."));
+          check.preload = "metadata";
+          check.src = url;
+        });
+      } catch (error) {
+        URL.revokeObjectURL(url);
+        throw new RecordingError(`${mimeType}: ${error instanceof Error ? error.message : "The exported video could not be verified."}`);
+      }
       const a = document.createElement("a");
       a.href = url;
-      a.download = `capgen-captioned-video.${fileExt}`;
+      a.download = `editron-captioned-video.${fileExt}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (fileExt === "webm") {
+        toast({
+          title: "Exported as WebM",
+          description: "Your browser could not record MP4. Use a player that supports WebM.",
+        });
+      }
 
-      setExportMsg(null);
+      setExportMsg(`${fileExt.toUpperCase()} download started.`);
       setIsExportingVideo(false);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Video export failed";
-      console.error("[exportVideo]", msg);
-      setExportMsg(`Export failed: ${msg}`);
-      setIsExportingVideo(false);
-      setTimeout(() => setExportMsg(null), 5000);
+      if (err instanceof RecordingError && attempt + 1 < candidateCount) {
+        console.warn("[exportVideo] Encoder failed; trying another format:", msg);
+        setExportMsg("Trying another video format…");
+        retry = true;
+      } else {
+        console.error("[exportVideo]", msg);
+        setExportMsg(`Export failed: ${msg}`);
+        setIsExportingVideo(false);
+      }
+    } finally {
+      cancelAnimationFrame(animationFrame);
+      if (recorder && recorder.state !== "inactive") recorder.stop();
+      combinedStream?.getTracks().forEach((track) => track.stop());
+      sourceStream?.getTracks().forEach((track) => track.stop());
+      video.pause();
+      video.muted = wasMuted;
+      if (video !== previewVideo) video.removeAttribute("src");
+      brollEls.forEach((el) => {
+        el.pause();
+        el.src = "";
+      });
+      brollImageEls.forEach((image) => { image.src = ""; });
+      transitionEls.forEach((el) => {
+        el.pause();
+        el.src = "";
+      });
     }
+    if (retry) await exportVideo(attempt + 1);
   };
 
   const updateStyle = (patch: Partial<CaptionStyle>) => {
@@ -1353,8 +1569,20 @@ export function CaptionStudio({
     // Removed
   };
 
-  const canExport = segments.length > 0;
+  const isProcessing = stage === "uploading" || stage === "queued" ||
+    stage === "transcribing" || stage === "timing";
+  const canExport = segments.length > 0 && !isAudio && !!videoUrl && !isProcessing;
   const activeIdx = segments.findIndex((s) => currentTime >= s.start && currentTime < s.end);
+
+  const changeWordsPerCaption = (value: number) => {
+    if (value === wordsPerCaption) return;
+    if (segments.length) {
+      const regrouped = regroupCaptions(segments, brolls, value, pendingSuggestedSegmentIdsRef.current);
+      setSegments(regrouped.segments);
+      setBrolls(regrouped.brolls);
+    }
+    setWordsPerCaption(value);
+  };
 
   function drawCover(ctx: CanvasRenderingContext2D, el: CanvasImageSource, vw: number, vh: number, cw: number, ch: number) {
     const scale = Math.max(cw / vw, ch / vh);
@@ -1568,7 +1796,7 @@ export function CaptionStudio({
         <div className="overflow-hidden rounded-3xl border-liquid-metal bg-zinc-950 shadow-2xl">
           {/* Toolbar */}
           <div className="flex flex-col gap-3 border-b border-zinc-800 bg-black px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-            <div className="flex items-start gap-3">
+            <div className="flex min-w-0 items-start gap-3">
               <div className="relative mt-0.5 h-5 w-9 shrink-0 overflow-hidden">
                 <Image
                   src="/editron-studio-logo.jpeg"
@@ -1578,9 +1806,9 @@ export function CaptionStudio({
                   className="absolute left-[-22px] top-[-18px] h-[56px] w-[75px] max-w-none"
                 />
               </div>
-              <div>
+              <div className="min-w-0">
                 <div className="text-sm font-bold leading-5 text-white">Editron Studio</div>
-                <div className="text-xs leading-4 text-muted-foreground">
+                <div className="break-all text-xs leading-4 text-muted-foreground">
                   {sourceName || "No file loaded"}{" "}
                   {file && <span className="text-primary">· {(file.size / 1024 / 1024).toFixed(2)} MB</span>}
                   {(savedProjectId || sourceKey) && (
@@ -1593,9 +1821,18 @@ export function CaptionStudio({
                         : projectSaveState === "error"
                           ? "· Save failed"
                           : projectSaveState === "saved"
-                            ? "· Saved to account"
+                            ? "· Saved to workspace"
                             : ""}
                     </span>
+                  )}
+                  {projectSaveState === "error" && (
+                    <button
+                      type="button"
+                      onClick={() => setSaveRetry((value) => value + 1)}
+                      className="ml-2 text-primary underline underline-offset-2"
+                    >
+                      Retry save
+                    </button>
                   )}
                 </div>
               </div>
@@ -1605,7 +1842,7 @@ export function CaptionStudio({
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <div className="flex h-9 items-center gap-2 rounded-md border border-border bg-card px-3">
+                    <div className="flex h-11 items-center gap-2 rounded-md border border-border bg-card px-3 sm:h-9">
                       <Label htmlFor="wpc-input" className="text-xs font-medium text-muted-foreground">
                         Words/caption
                       </Label>
@@ -1614,97 +1851,104 @@ export function CaptionStudio({
                         type="number"
                         min={1}
                         max={12}
-                        value={wordsPerCaption}
+                        value={wordsPerCaptionInput}
                         onChange={(e) => {
-                          const v = parseInt(e.target.value, 10);
-                          if (!isNaN(v)) setWordsPerCaption(Math.max(1, Math.min(12, v)));
-                          else setWordsPerCaption(6);
+                          const input = e.target.value;
+                          setWordsPerCaptionInput(input);
+                          if (/^\d+$/.test(input)) {
+                            const value = Number(input);
+                            if (value >= 1 && value <= 12) changeWordsPerCaption(value);
+                          }
                         }}
-                        className="h-6 w-12 border-transparent bg-transparent p-0 text-center text-sm text-white [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                        onBlur={() => setWordsPerCaptionInput(String(wordsPerCaption))}
+                        disabled={isProcessing || isExportingVideo || pendingBrollOperations > 0 || projectLoadState === "loading"}
+                        aria-invalid={wordsPerCaptionInput !== "" && (!/^\d+$/.test(wordsPerCaptionInput) || Number(wordsPerCaptionInput) < 1 || Number(wordsPerCaptionInput) > 12)}
+                        inputMode="numeric"
+                        className="h-9 w-12 border-transparent bg-transparent p-0 text-center text-base text-white sm:h-6 sm:text-sm [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                       />
                     </div>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>Words per caption segment (1–12). Lower = more frequent caption pops.</p>
+                    <p>
+                      {pendingBrollOperations > 0
+                        ? "Wait for the B-roll operation to finish before changing caption length."
+                        : "Choose 1–12 words per caption. Existing captions update without processing again."}
+                    </p>
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
 
               <LiquidMetalButton
                 label={
-                  stage === "uploading" || stage === "queued" ||
-                  stage === "transcribing" || stage === "timing"
+                  isProcessing
                     ? "Processing…"
-                    : !file && stage === "done"
+                    : stage === "done"
                       ? "Captions ready"
                       : "Edit now"
                 }
                 onClick={generate}
                 width={160}
                 disabled={
-                  stage === "uploading" || stage === "queued" ||
-                  stage === "transcribing" || stage === "timing" ||
-                  projectLoadState === "loading"
+                  isProcessing ||
+                  projectLoadState === "loading" ||
+                  !file ||
+                  stage === "done"
                 }
               />
-
             </div>
           </div>
-
-          {/* Progress bar */}
-          {stage !== "idle" && (
+          {/* Completion and error status */}
+          {(stage === "done" || stage === "error") && (
             <div className="border-b border-border bg-card px-4 py-2 sm:px-6">
-              <div className="flex items-center gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
                 {stage === "error" ? (
                   <AlertCircle className="size-4 text-red-500" />
                 ) : stage === "done" ? (
                   <CheckCircle2 className="size-4 text-primary" />
-                ) : (
-                  <Loader2 className="size-4 animate-spin text-primary" />
-                )}
+                ) : null}
                 <span className={cn("font-medium", stage === "error" ? "text-red-600" : "text-white")}>
                   {STAGE_LABELS[stage]}
-                  {stage === "transcribing" && processingStage
-                    ? ` · ${PROCESSING_STAGE_LABELS[processingStage] || processingStage}`
-                    : ""}
                 </span>
                 {errorMsg && <span className="text-red-500"> - {errorMsg}</span>}
                 {stage === "done" && segments.length > 0 && (
                   <span className="ml-auto text-muted-foreground">
-                    {segments.length} segments · {segments.reduce((a, s) => a + s.text.split(/\\s+/).length, 0)} words
+                    {segments.length} segments · {segments.reduce((a, s) => a + s.text.trim().split(/\s+/).filter(Boolean).length, 0)} words
                   </span>
                 )}
               </div>
-              {stage !== "error" && stage !== "done" && (
-                <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-secondary">
-                  <motion.div
-                    className="h-full bg-primary"
-                    initial={false}
-                    animate={{
-                      width:
-                        stage === "uploading"
-                          ? "30%"
-                          : stage === "queued"
-                            ? "35%"
-                            : stage === "transcribing"
-                              ? `${Math.max(5, Math.min(100, processingProgress))}%`
-                              : stage === "timing"
-                                ? "92%"
-                                : "100%",
-                    }}
-                    transition={{ duration: 0.5 }}
-                  />
-                </div>
-              )}
             </div>
           )}
 
           {/* Body */}
-          <div className="grid gap-0 lg:grid-cols-[1.4fr_1fr]">
+          <div className="grid min-w-0 gap-0 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
             {/* Left: preview + upload */}
-            <div className="border-b border-border p-4 sm:p-6 lg:border-b-0 lg:border-r">
+            <div className="min-w-0 border-b border-border p-3 sm:p-6 lg:border-b-0 lg:border-r">
               {videoUrl ? (
-                <div className="space-y-3">
+                <div className={cn("relative", isProcessing && "overflow-hidden rounded-xl")}>
+                {isProcessing && (
+                  <motion.div
+                    className="flex min-h-[280px] flex-col items-center justify-center rounded-xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-black px-6 py-10 text-center sm:min-h-[360px]"
+                    role="status"
+                    aria-live="polite"
+                    initial={reduceMotion ? false : { opacity: 0, scale: 0.98, y: 8 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    transition={{ duration: reduceMotion ? 0 : 0.6, ease: "easeOut" }}
+                  >
+                    <ProcessingOrb />
+                    <ProcessingMessage />
+                  </motion.div>
+                )}
+                <motion.div
+                  className={cn("space-y-3", isProcessing && "pointer-events-none absolute inset-x-0 top-0")}
+                  aria-hidden={isProcessing}
+                  inert={isProcessing}
+                  initial={false}
+                  animate={isProcessing
+                    ? { opacity: 0, scale: reduceMotion ? 1 : 0.98, filter: reduceMotion ? "blur(0px)" : "blur(6px)", transitionEnd: { visibility: "hidden" } }
+                    : { opacity: 1, scale: 1, filter: "blur(0px)", visibility: "visible" }}
+                  transition={{ duration: reduceMotion ? 0 : 0.5, ease: "easeInOut" }}
+                >
+                  <div ref={previewRef} className="bg-black fullscreen:flex fullscreen:items-center fullscreen:justify-center">
                   <CaptionPreview
                     videoUrl={videoUrl}
                     isAudio={isAudio}
@@ -1726,18 +1970,13 @@ export function CaptionStudio({
                     hookTitle=""
                     onChangeStyle={(patch) => setStyle((s) => ({ ...s, ...patch }))}
                   />
+                  </div>
                   {/* Professional Seek Bar */}
                   <div
-                    className="relative h-2 w-full cursor-pointer rounded-full bg-secondary overflow-hidden group"
-                    onClick={(e) => {
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const x = e.clientX - rect.left;
-                      const pos = Math.max(0, Math.min(1, x / rect.width));
-                      seekTo(pos * duration);
-                    }}
+                    className="relative h-10 w-full sm:h-6"
                   >
                     {/* B-Roll Markers - Rendered FIRST so they are in the background */}
-                    <div className="absolute inset-0 pointer-events-none flex items-center">
+                    <div className="absolute inset-x-0 top-4 h-2 overflow-hidden rounded-full bg-secondary pointer-events-none flex items-center sm:top-2">
                       {brolls && brolls.map((b, idx) => {
                         const left = duration > 0 ? (b.start / duration) * 100 : 0;
                         const width = duration > 0 ? ((b.end - b.start) / duration) * 100 : 0;
@@ -1757,22 +1996,34 @@ export function CaptionStudio({
                     </div>
                     {/* Playhead - Using a distinct style to ensure it doesn't "wipe out" the orange */}
                     <div
-                      className="absolute top-0 h-full bg-white/30 transition-all duration-100 ease-linear z-10"
+                      className="pointer-events-none absolute top-4 h-2 rounded-full bg-white/30 z-10 sm:top-2"
                       style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
                     />
                     {/* Playhead Indicator Line - The sharp white line */}
                     <div
-                      className="absolute top-0 bottom-0 w-0.5 bg-white z-20"
+                      className="pointer-events-none absolute top-3 bottom-3 w-0.5 bg-white z-20 sm:top-1 sm:bottom-1"
                       style={{ left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
+                    />
+                    <input
+                      type="range"
+                      min={0}
+                      max={duration > 0 && Number.isFinite(duration) ? duration : 0}
+                      step={0.01}
+                      value={Math.max(0, Math.min(currentTime, duration || 0))}
+                      onChange={(event) => seekTo(Number(event.target.value))}
+                      disabled={!duration}
+                      aria-label="Seek video"
+                      aria-valuetext={`${formatClock(currentTime)} of ${formatClock(duration)}`}
+                      className="absolute inset-0 z-30 h-full w-full cursor-pointer opacity-0 focus-visible:opacity-100 accent-white"
                     />
                   </div>
 
                   {/* Mini player controls */}
-                  <div className="flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2 relative z-10">
+                  <div className="relative z-10 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-background px-2 py-2 sm:gap-3 sm:px-3">
                     <button
                       type="button"
                       onClick={togglePlay}
-                      className="grid size-8 place-items-center rounded-full bg-primary text-primary-foreground shadow-sm hover:bg-primary/90"
+                      className="grid size-10 shrink-0 place-items-center rounded-full bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 sm:size-8"
                       aria-label={isPlaying ? "Pause" : "Play"}
                     >
                       {isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
@@ -1780,13 +2031,14 @@ export function CaptionStudio({
                     <span className="font-mono text-xs text-muted-foreground">
                       {formatClock(currentTime)} / {formatClock(duration)}
                     </span>
-                    <div className="ml-auto flex items-center gap-2">
+                    <div className="ml-auto flex items-center gap-1 sm:gap-2">
                       <Button
                         type="button"
                         variant="ghost"
                         size="sm"
                         onClick={toggleMute}
-                        className="text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        aria-label={isMuted ? "Unmute" : "Mute"}
+                        className="h-10 w-10 px-0 text-muted-foreground hover:bg-secondary hover:text-foreground sm:h-9 sm:w-9"
                       >
                         {isMuted ? <VolumeX className="size-4" /> : <Volume2 className="size-4" />}
                       </Button>
@@ -1795,7 +2047,8 @@ export function CaptionStudio({
                         variant="ghost"
                         size="sm"
                         onClick={toggleFullScreen}
-                        className="text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        aria-label="Toggle fullscreen preview"
+                        className="h-10 w-10 px-0 text-muted-foreground hover:bg-secondary hover:text-foreground sm:h-9 sm:w-9"
                       >
                         <Maximize className="size-4" />
                       </Button>
@@ -1812,13 +2065,14 @@ export function CaptionStudio({
                           stage === "uploading" || stage === "queued" ||
                           stage === "transcribing" || stage === "timing"
                         }
-                        className="text-muted-foreground hover:bg-secondary hover:text-foreground"
+                        className="h-10 px-2 text-muted-foreground hover:bg-secondary hover:text-foreground sm:h-9 sm:px-3"
                       >
                         <Upload className="size-4" />
                         Replace
                       </Button>
                     </div>
                   </div>
+                </motion.div>
                 </div>
               ) : (
                 <div
@@ -1828,16 +2082,18 @@ export function CaptionStudio({
                   }}
                   onDragLeave={() => setDragOver(false)}
                   onDrop={onDrop}
-                  style={{ aspectRatio: "16 / 9" }}
                   className={cn(
-                    "grid w-full cursor-pointer place-items-center rounded-xl border-2 border-dashed bg-black p-6 text-center transition-all duration-300",
+                    "grid min-h-[240px] w-full cursor-pointer place-items-center rounded-xl border-2 border-dashed bg-black p-4 text-center transition-all duration-300 sm:aspect-video sm:p-6",
                     dragOver ? "border-zinc-400 bg-zinc-900/50" : "border-zinc-800 hover:border-zinc-600 hover:bg-zinc-900/30"
                   )}
                   onClick={() => fileInputRef.current?.click()}
                   role="button"
                   tabIndex={0}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") fileInputRef.current?.click();
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      fileInputRef.current?.click();
+                    }
                   }}
                 >
                   <div className="mx-auto max-w-md">
@@ -1851,10 +2107,10 @@ export function CaptionStudio({
                       mp4 · mp3 · wav · m4a · webm · mov · up to 150MB
                     </p>
                     <div className="mt-4 flex items-center justify-center">
-                      <Button type="button" className="bg-primary text-primary-foreground hover:bg-primary/90">
+                      <span className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground">
                         <Upload className="size-4" />
                         Choose file
-                      </Button>
+                      </span>
                     </div>
                     <p className="mt-4 text-xs text-muted-foreground">
                       Uploads are processed in the background. Files up to 150 MB and 30 minutes are supported.
@@ -1885,33 +2141,33 @@ export function CaptionStudio({
                 <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   Export
                 </span>
-                <Select value={exportQuality} onValueChange={(v) => setExportQuality(v as typeof exportQuality)}>
-                  <SelectTrigger className="h-9 w-[100px] border-border bg-card text-xs">
+                <Select value={exportQuality} onValueChange={(v) => setExportQuality(v as typeof exportQuality)} disabled={!canExport || isExportingVideo}>
+                  <SelectTrigger aria-label="Export quality" className="h-9 w-[100px] border-border bg-card text-xs">
                     <SelectValue placeholder="Quality" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="480p">480p</SelectItem>
                     <SelectItem value="720p">720p</SelectItem>
                     <SelectItem value="1080p">1080p</SelectItem>
+                    <SelectItem value="4k">4K</SelectItem>
                   </SelectContent>
                 </Select>
                 <LiquidMetalButton
                   label="Export Video"
-                  onClick={exportVideo}
+                  onClick={() => void exportVideo()}
                   width={130}
                   disabled={!canExport || isExportingVideo}
                 />
-                {!canExport && (
+                {!segments.length && (
                   <span className="text-xs text-muted-foreground">Generate captions to enable export</span>
                 )}
-                {canExport && isAudio && (
+                {segments.length > 0 && isAudio && (
                   <span className="text-xs text-muted-foreground">Video export needs a video file (not audio-only)</span>
                 )}
               </div>
-
               {/* Export progress bar */}
               {(isExportingVideo || exportMsg) && (
-                <div className="mt-3 rounded-lg border border-border bg-background px-4 py-2">
+                <div role="status" aria-live="polite" className="mt-3 rounded-lg border border-border bg-background px-4 py-2">
                   <div className="flex items-center gap-2 text-xs">
                     {exportMsg && exportMsg.startsWith("Export failed") ? (
                       <AlertCircle className="size-4 text-red-500" />
@@ -1920,7 +2176,7 @@ export function CaptionStudio({
                     ) : (
                       <Clapperboard className="size-4 text-primary" />
                     )}
-                    <span className={cn("font-medium", exportMsg?.startsWith("Export failed") ? "text-red-s500" : "text-white")}>
+                    <span className={cn("font-medium", exportMsg?.startsWith("Export failed") ? "text-red-500" : "text-white")}>
                       {exportMsg || "Processing…"}
                     </span>
                   </div>
@@ -1937,32 +2193,24 @@ export function CaptionStudio({
                 </div>
               )}
 
-              {/* AI Tools */}
-              <div className="mt-4 rounded-lg border-liquid-metal bg-zinc-950 p-3">
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                  AI Tools
-                </h4>
-                <div className="text-xs text-muted-foreground italic">
-                  Advanced tools are currently disabled.
-                </div>
-              </div>
             </div>
 
             {/* Right: Tab-based Editor */}
-            <div className="bg-background p-4 sm:p-6 border-l border-liquid-metal">
+            <div className="min-w-0 bg-background p-3 sm:p-6 lg:border-l lg:border-liquid-metal">
               <div className="flex items-center justify-center gap-3 rounded-full bg-zinc-900 p-1 mb-6 border border-zinc-800">
-                {[
+                {([
                   { id: "captions", label: "Captions", icon: TypeIcon },
                   { id: "style", label: "Templates", icon: Settings2 },
-                ].map((tab) => (
+                ] as const).map((tab) => (
                   <button
                     key={tab.id}
-                    onClick={() => setActiveTab(tab.id as any)}
+                    onClick={() => setActiveTab(tab.id)}
+                    aria-pressed={activeTab === tab.id}
                     className={cn(
-                      "flex items-center gap-2 px-6 py-2 rounded-full text-xs font-bold transition-all",
+                      "flex min-h-11 flex-1 items-center justify-center gap-2 rounded-full px-3 py-2 text-xs font-bold transition-colors sm:flex-none sm:px-6",
                       activeTab === tab.id
-                        ? "bg-white text-black shadow-lg scale-105"
-                        : "text-zinc-500 hover:text-white hover:bg-zinc-800"
+                        ? "bg-white text-black shadow-lg"
+                        : "text-zinc-400 hover:text-white hover:bg-zinc-800"
                     )}
                   >
                     <tab.icon className="size-3.5" />
@@ -1973,7 +2221,7 @@ export function CaptionStudio({
 
               {activeTab === "captions" && (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
                     <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
                       Caption Segments ({segments.length})
                     </h4>
@@ -1982,7 +2230,7 @@ export function CaptionStudio({
                         id="broll-transitions-label"
                         className="text-xs font-medium text-zinc-300"
                       >
-                        Transitions
+                        B-roll transitions
                       </span>
                       <span className="text-[10px] text-zinc-500">
                         {brollTransitionsEnabled ? "On" : "Off"}
@@ -1996,21 +2244,18 @@ export function CaptionStudio({
                       />
                     </div>
                   </div>
-                  <ScrollArea className="capgen-scroll h-[550px] rounded-lg border border-zinc-800 bg-zinc-950">
+                  <ScrollArea className="editron-scroll h-[min(550px,60vh)] rounded-lg border border-zinc-800 bg-zinc-950">
                     <div className="flex flex-col gap-3 p-3">
                       {segments.length === 0 && (
                         <div className="p-6 text-center text-sm text-muted-foreground">
-                          No segments yet. Generate captions to start editing.
+                          Upload a file and select Edit now to create captions. You can explore templates anytime.
                         </div>
                       )}
+                      {segments.length > 0 && (
+                        <p className="px-1 text-xs text-zinc-400">Hide captions without changing your video or audio.</p>
+                      )}
                       {segments.map((seg, i) => {
-                        const broll = brolls.find(b =>
-                          b.windowId === `w-${seg.start.toFixed(1)}` ||
-                          b.windowId === `direct-${seg.id}` ||
-                          b.windowId === `manual-${seg.id}` ||
-                          b.windowId === `user-upload-${seg.id}` ||
-                          b.windowId.startsWith(`auto-`) && b.windowId.replace("auto-", "") === seg.id
-                        ) ?? null;
+                        const broll = brolls.find((clip) => brollBelongsToSegment(clip, seg)) ?? null;
 
                         return (
                           <SegmentCard
@@ -2019,13 +2264,14 @@ export function CaptionStudio({
                             segment={seg}
                             isActive={activeIdx === i}
                             onUpdate={updateSegment}
-                            onDelete={(id) => updateSegment(id, { deleted: true })}
-                            onSeek={seekTo}
+                            onToggleHidden={(id) => updateSegment(id, { hidden: !seg.hidden })}
+                            onSeek={(time) => seekTo(time, true)}
                             broll={broll}
                             onAssignBroll={assignClip}
                             onRegenerateBroll={regenerateClip}
                             onRemoveBroll={removeClip}
                             onFetchAndAssignBroll={fetchAndAssignBroll}
+                            onBrollActivityChange={(change) => setPendingBrollOperations((count) => count + change)}
                             suggestions={suggestions}
                           />
                         );
@@ -2043,14 +2289,17 @@ export function CaptionStudio({
                     </h4>
                     <Settings2 className="size-4 text-muted-foreground" />
                   </div>
-                  <StylePanel
-                    style={style}
-                    onChange={updateStyle}
-                    autoEmojiEnabled={autoEmojiEnabled}
-                    onAutoEmojiChange={handleAutoEmojiChange}
-                    wordsPerCaption={wordsPerCaption}
-                    onWordsPerCaptionChange={setWordsPerCaption}
-                  />
+                  <div
+                    role="region"
+                    aria-label="Global style controls"
+                    tabIndex={0}
+                    className="editron-scroll max-h-[min(550px,60vh)] overflow-y-auto overscroll-contain pr-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                  >
+                    <StylePanel
+                      style={style}
+                      onChange={updateStyle}
+                    />
+                  </div>
                 </div>
               )}
             </div>

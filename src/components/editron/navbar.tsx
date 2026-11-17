@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { CapGenLogo } from "./logo";
+import { EditronLogo } from "./logo";
 import { cn } from "@/lib/utils";
 import { Menu, X } from "lucide-react";
 
@@ -43,8 +43,8 @@ export function Navbar({ onOpenStudio }: { onOpenStudio?: () => void }) {
       )}
     >
       <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
-        <a href="#top" className="flex items-center" aria-label="CapGen home">
-          <CapGenLogo />
+        <a href="#top" className="flex items-center" aria-label="Editron home">
+          <EditronLogo />
         </a>
 
         <nav className="hidden items-center gap-1 md:flex" aria-label="Main">

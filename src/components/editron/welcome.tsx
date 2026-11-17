@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   CircleUserRound,
   Folder,
@@ -21,7 +21,10 @@ import { CaptionStudio } from "./caption-studio";
 import { motion, AnimatePresence } from "framer-motion";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useGuestSession } from "@/app/providers";
+import { parseWorkspaceSession, type StudioPage } from "@/lib/workspace-session";
+import { toast } from "@/hooks/use-toast";
 const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === "true";
+const WORKSPACE_KEY = "editron-workspace";
 
 function StudioSidebar({
   onHome,
@@ -49,7 +52,7 @@ function StudioSidebar({
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 
   const navItemClass = (active = false) =>
-    `flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors ${
+    `flex min-h-11 w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] transition-colors md:min-h-0 ${
       active
         ? "bg-zinc-900 text-white"
         : "text-zinc-400 hover:bg-zinc-900/70 hover:text-white"
@@ -88,7 +91,7 @@ function StudioSidebar({
         <button
           type="button"
           onClick={() => setIsMobileNavOpen((open) => !open)}
-          className="grid size-9 place-items-center rounded-lg text-zinc-300 transition-colors hover:bg-zinc-900 hover:text-white md:hidden"
+          className="grid size-11 place-items-center rounded-lg text-zinc-300 transition-colors hover:bg-zinc-900 hover:text-white md:hidden"
           aria-label={isMobileNavOpen ? "Close navigation" : "Open navigation"}
           aria-expanded={isMobileNavOpen}
         >
@@ -123,7 +126,7 @@ function StudioSidebar({
                 setIsMobileNavOpen(false);
                 onNewProject();
               }}
-              className="flex w-full items-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-left text-[13px] font-medium text-white transition-colors hover:bg-zinc-800"
+              className="flex min-h-11 w-full items-center gap-2.5 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-2 text-left text-[13px] font-medium text-white transition-colors hover:bg-zinc-800 md:min-h-0"
             >
               <Plus className="size-4" />
               <span>New project</span>
@@ -193,10 +196,59 @@ export function Welcome() {
   const { data: session, status } = useSession();
   const guestSession = useGuestSession();
   const [showStudio, setShowStudio] = useState(false);
-  const [studioPage, setStudioPage] = useState<"home" | "editor" | "projects">("editor");
+  const [studioPage, setStudioPage] = useState<StudioPage>("editor");
   const [initialFile, setInitialFile] = useState<File | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [savedProjectId, setSavedProjectId] = useState<string | null>(null);
   const [editorSession, setEditorSession] = useState(0);
+  const [workspaceRestored, setWorkspaceRestored] = useState(false);
+  const [hasUnsavedWork, setHasUnsavedWork] = useState(false);
+
+  useEffect(() => {
+    try {
+      const stored = sessionStorage.getItem(WORKSPACE_KEY);
+      if (stored) {
+        const workspace = parseWorkspaceSession(stored);
+        if (workspace) {
+          setShowStudio(true);
+          setStudioPage(workspace.page);
+          if (workspace.projectId) {
+            setActiveProjectId(workspace.projectId);
+            setSavedProjectId(workspace.projectId);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("[Welcome] Could not restore the workspace:", error);
+      toast({
+        title: "Workspace could not be restored",
+        description: "Open your saved project from the Projects page.",
+        variant: "destructive",
+      });
+    }
+    setWorkspaceRestored(true);
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceRestored) return;
+    try {
+      if (showStudio) {
+        sessionStorage.setItem(WORKSPACE_KEY, JSON.stringify({
+          page: studioPage,
+          projectId: studioPage === "editor" ? savedProjectId : null,
+        }));
+      } else {
+        sessionStorage.removeItem(WORKSPACE_KEY);
+      }
+    } catch (error) {
+      console.error("[Welcome] Could not remember the workspace:", error);
+      toast({
+        title: "Workspace position could not be remembered",
+        description: "Your saved projects remain available from the Projects page.",
+        variant: "destructive",
+      });
+    }
+  }, [workspaceRestored, showStudio, studioPage, savedProjectId]);
 
   const handleUpload = () => {
     if (AUTH_ENABLED && status === "loading") return;
@@ -210,16 +262,25 @@ export function Welcome() {
     if (input) input.click();
   };
 
+  const canLeaveEditor = () => studioPage !== "editor" || !hasUnsavedWork ||
+    window.confirm("Your current work is not saved. Leave the editor and discard it?");
+
   const startNewProject = () => {
+    if (!canLeaveEditor()) return;
+    setHasUnsavedWork(false);
     setInitialFile(null);
     setActiveProjectId(null);
+    setSavedProjectId(null);
     setEditorSession((session) => session + 1);
     setStudioPage("editor");
   };
 
   const openProject = (projectId: string) => {
+    if (!canLeaveEditor()) return;
+    setHasUnsavedWork(false);
     setInitialFile(null);
     setActiveProjectId(projectId);
+    setSavedProjectId(projectId);
     setEditorSession((session) => session + 1);
     setStudioPage("editor");
   };
@@ -229,11 +290,16 @@ export function Welcome() {
     if (file) {
       setInitialFile(file);
       setActiveProjectId(null);
+      setSavedProjectId(null);
       setStudioPage("editor");
       setShowStudio(true);
     }
     e.currentTarget.value = "";
   };
+
+  if (!workspaceRestored) {
+    return <div className="min-h-screen bg-black" aria-busy="true" />;
+  }
 
   return (
     <div className="relative min-h-screen w-full bg-black">
@@ -261,7 +327,7 @@ export function Welcome() {
 
             {/* Branding */}
             <div className="flex flex-col items-center gap-4">
-              <LiquidMetalText text="EDITRON" fontSize={120} />
+              <LiquidMetalText text="EDITRON" fontSize="clamp(48px, 14vw, 120px)" />
               <p className="text-zinc-500 font-light tracking-widest text-sm uppercase">
                 The New Standard of Editing
               </p>
@@ -269,7 +335,7 @@ export function Welcome() {
 
             {/* Minimal Upload Action */}
             <div className="flex flex-col items-center gap-6 z-10">
-              <div className="flex items-center gap-8">
+              <div className="flex flex-wrap items-center justify-center gap-4 sm:gap-8">
                 <LiquidMetalButton
                   label="Upload Video"
                   onClick={handleUpload}
@@ -294,9 +360,19 @@ export function Welcome() {
             className="relative z-10 min-h-screen w-full bg-black md:pl-[220px]"
           >
             <StudioSidebar
-              onHome={() => setStudioPage("home")}
+              onHome={() => {
+                if (canLeaveEditor()) {
+                  setHasUnsavedWork(false);
+                  setStudioPage("home");
+                }
+              }}
               onNewProject={startNewProject}
-              onProjects={() => setStudioPage("projects")}
+              onProjects={() => {
+                if (canLeaveEditor()) {
+                  setHasUnsavedWork(false);
+                  setStudioPage("projects");
+                }
+              }}
               onSignIn={() => void signIn("google")}
               onSignOut={() => void signOut({ callbackUrl: "/" })}
               userName={session?.user?.name ?? null}
@@ -312,11 +388,15 @@ export function Welcome() {
                   onOpenProject={openProject}
                   view={studioPage}
                 />
+              ) : ((AUTH_ENABLED && status === "loading") || (!AUTH_ENABLED && !guestSession.ready && !guestSession.error)) ? (
+                <div className="min-h-screen bg-black" role="status">Loading workspace…</div>
               ) : (
                 <CaptionStudio
                   key={editorSession}
                   initialFile={initialFile}
                   projectId={activeProjectId}
+                  onSavedProjectChange={setSavedProjectId}
+                  onUnsavedWorkChange={setHasUnsavedWork}
                 />
               )}
             </main>

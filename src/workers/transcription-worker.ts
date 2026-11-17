@@ -7,6 +7,7 @@ import { createQueueRedisConnection } from "@/lib/redis";
 import {
   processTranscriptionJob,
   TranscriptionInputError,
+  TranscriptionServiceError,
 } from "@/lib/transcription/processor";
 import { TRANSCRIPTION_QUEUE_NAME } from "@/lib/transcription/queue";
 import type { TranscriptionJobData } from "@/lib/transcription/types";
@@ -74,7 +75,7 @@ async function startWorker() {
         const attempts = job.attemptsMade + 1;
         const terminal = error instanceof TranscriptionInputError ||
           attempts >= (job.opts.attempts ?? 1);
-        const safeMessage = error instanceof TranscriptionInputError
+        const safeMessage = error instanceof TranscriptionInputError || error instanceof TranscriptionServiceError
           ? error.message
           : "Video processing failed. Please try again later.";
 

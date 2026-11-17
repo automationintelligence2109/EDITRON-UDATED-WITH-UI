@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-export function CapGenLogo({ className, showIcon = true }: { className?: string; showIcon?: boolean }) {
+export function EditronLogo({ className, showIcon = true }: { className?: string; showIcon?: boolean }) {
   return (
     <div className={cn("flex items-center gap-2 select-none", className)}>
       {showIcon && (
@@ -26,8 +26,7 @@ export function CapGenLogo({ className, showIcon = true }: { className?: string;
         </div>
       )}
       <span className="text-xl font-extrabold tracking-tight">
-        <span className="text-[#FF6B1A]">Cap</span>
-        <span className="text-white">Gen</span>
+        <span className="text-white">Editron</span>
       </span>
     </div>
   );

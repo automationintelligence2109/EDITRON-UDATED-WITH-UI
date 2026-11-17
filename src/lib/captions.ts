@@ -1,4 +1,4 @@
-// Caption data model + helpers for CapGen studio.
+// Caption data model + helpers for Editron studio.
 
 export type WordTimestamp = {
   word: string;
@@ -12,6 +12,7 @@ export type CaptionSegment = {
   end: number; // seconds
   text: string;
   words?: WordTimestamp[];
+  hidden?: boolean;
 };
 
 export type CaptionAnimationType =
@@ -38,7 +39,7 @@ export type CinematicPresetId =
   | "minimalist-underline";
 
 export type CaptionStyle = {
-  fontFamily: string; // value key from CAPGEN_FONTS
+  fontFamily: string; // value key from EDITRON_FONTS
   fontSize: number; // px
   textColor: string; // hex
   bgColor: string; // hex caption box bg
@@ -493,6 +494,7 @@ export function formatSRTTime(seconds: number): string {
 
 export function generateSRT(segments: CaptionSegment[]): string {
   return segments
+    .filter((seg) => !seg.hidden)
     .map((seg, i) => `${i + 1}\n${formatSRTTime(seg.start)} --> ${formatSRTTime(seg.end)}\n${seg.text}\n`)
     .join("\n");
 }
@@ -509,6 +511,7 @@ export function formatVTTTime(seconds: number): string {
 
 export function generateVTT(segments: CaptionSegment[]): string {
   const body = segments
+    .filter((seg) => !seg.hidden)
     .map((seg) => `${formatVTTTime(seg.start)} --> ${formatVTTTime(seg.end)}\n${seg.text}`)
     .join("\n\n");
   return `WEBVTT\n\n${body}\n`;
@@ -516,7 +519,7 @@ export function generateVTT(segments: CaptionSegment[]): string {
 
 // ---------- TXT ----------
 export function generateTXT(segments: CaptionSegment[]): string {
-  return segments.map((s) => s.text).join(" ");
+  return segments.filter((s) => !s.hidden).map((s) => s.text).join(" ");
 }
 
 // Browser-side download helper
@@ -537,10 +540,11 @@ export function activeSegmentIndex(segments: CaptionSegment[], t: number): numbe
   // binary-ish linear scan (segments are usually small)
   for (let i = 0; i < segments.length; i++) {
     const segment = segments[i];
-    if (t >= segment.start && t < segment.end) return i;
+    if (t >= segment.start && t < segment.end) return segment.hidden ? -1 : i;
 
     const nextSegment = segments[i + 1];
     if (
+      !segment.hidden &&
       nextSegment &&
       t >= segment.end &&
       t < nextSegment.start &&

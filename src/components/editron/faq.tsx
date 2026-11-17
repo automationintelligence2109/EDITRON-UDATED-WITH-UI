@@ -11,7 +11,7 @@ import { HelpCircle } from "lucide-react";
 
 const FAQS = [
   {
-    q: "Is CapGen free?",
+    q: "Is Editron free?",
     a: "Yes. The Free plan gives you 30 minutes of captioning every month, 82 languages, .SRT and .TXT export, and access to the live studio. You don't need a card to start. Upgrade to Creator or Studio only when you ship more.",
   },
   {
@@ -20,7 +20,7 @@ const FAQS = [
   },
   {
     q: "Does it work with audio-only files?",
-    a: "Yes. CapGen accepts mp3, wav, m4a, ogg and aac. When you upload audio, the studio shows a coloured background with captions overlaid in real time. The .SRT and .VTT exports work identically to video.",
+    a: "Yes. Editron accepts mp3, wav, m4a, ogg and aac. When you upload audio, the studio shows a coloured background with captions overlaid in real time. The .SRT and .VTT exports work identically to video.",
   },
   {
     q: "What does Auto Trim actually remove?",
@@ -28,11 +28,11 @@ const FAQS = [
   },
   {
     q: "Can I use it inside Premiere Pro or After Effects?",
-    a: "CapGen ships a plugin for Premiere Pro and After Effects on the Studio plan. You can generate captions, push the .SRT directly into your timeline, and round-trip edits without leaving the NLE. The plugin is included with team seats.",
+    a: "Editron ships a plugin for Premiere Pro and After Effects on the Studio plan. You can generate captions, push the .SRT directly into your timeline, and round-trip edits without leaving the NLE. The plugin is included with team seats.",
   },
   {
     q: "How accurate are the captions?",
-    a: "CapGen uses a state-of-the-art ASR engine tuned for Indian and international accents. For clean studio audio in supported languages, accuracy is typically above 95%. The word-timing editor lets you fix any word in two clicks, and every segment is fully editable before export.",
+    a: "Editron uses a state-of-the-art ASR engine tuned for Indian and international accents. For clean studio audio in supported languages, accuracy is typically above 95%. The word-timing editor lets you fix any word in two clicks, and every segment is fully editable before export.",
   },
 ];
 
@@ -46,7 +46,7 @@ export function Faq() {
             FAQ
           </div>
           <h2 className="text-balance text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
-            Questions, <span className="capgen-gradient-text">answered</span>
+            Questions, <span className="editron-gradient-text">answered</span>
           </h2>
         </div>
 

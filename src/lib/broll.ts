@@ -1,4 +1,4 @@
-// CapGen B-Roll — transcript-to-keyword windowing + shared types.
+// Editron B-Roll — transcript-to-keyword windowing + shared types.
 // Groups caption segments into ~N-second windows and extracts a short,
 // stock-footage-friendly search query for each window.
 
@@ -8,6 +8,7 @@ import type { CaptionSegment } from "./captions";
 export type BRollClip = {
   id: string; // unique per assignment (windowId + clipId)
   windowId: string;
+  segmentId?: string;
   start: number; // seconds — when this b-roll should appear
   end: number; // seconds — when it should end
   source: "pexels" | "pixabay" | "user";

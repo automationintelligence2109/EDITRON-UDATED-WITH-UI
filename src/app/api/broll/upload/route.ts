@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
     let thumbnailBuffer: Buffer | null = null;
 
     if (isVideo) {
-      temporaryDirectory = await mkdtemp(path.join(tmpdir(), "capgen-broll-"));
+      temporaryDirectory = await mkdtemp(path.join(tmpdir(), "editron-broll-"));
       const inputPath = path.join(temporaryDirectory, `input${extension}`);
       const thumbnailPath = path.join(temporaryDirectory, "thumbnail.jpg");
       await writeFile(inputPath, fileBuffer, { flag: "wx" });

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CapGen transcription subprocess — called by Next.js /api/transcribe.
+Editron transcription subprocess — called by Next.js /api/transcribe.
 
 Usage:
     python3 transcribe.py <audio_or_video_file_path> [words_per_caption] [mode]
@@ -54,7 +54,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg"}
 
-# Map CapGen language codes to whisper language hints.
+# Map Editron language codes to whisper language hints.
 LANG_MAP = {
     "en": "en", "en-US": "en", "en-GB": "en", "en-IN": "en",
     "hi": "hi", "hinglish": "hi",

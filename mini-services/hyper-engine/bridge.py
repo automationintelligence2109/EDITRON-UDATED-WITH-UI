@@ -12,7 +12,7 @@ class HyperCaptionsBridge:
 
     def synthesize(self, captions, style_id, brolls=None):
         """
-        Converts CapGen captions and B-roll clips into a Hyperframes Composition.
+        Converts Editron captions and B-roll clips into a Hyperframes Composition.
         """
         if style_id not in self.styles:
             raise ValueError(f"Style {style_id} not found in registry.")

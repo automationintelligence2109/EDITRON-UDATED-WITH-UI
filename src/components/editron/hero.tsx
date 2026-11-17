@@ -47,8 +47,8 @@ export function Hero({ onOpenStudio }: { onOpenStudio?: () => void }) {
       className="relative overflow-hidden bg-background"
     >
       {/* Decorative backgrounds */}
-      <div className="pointer-events-none absolute inset-0 capgen-radial-highlight" />
-      <div className="pointer-events-none absolute inset-0 capgen-grid-bg opacity-40" />
+      <div className="pointer-events-none absolute inset-0 editron-radial-highlight" />
+      <div className="pointer-events-none absolute inset-0 editron-grid-bg opacity-40" />
       <div className="pointer-events-none absolute -top-24 right-[-10%] h-72 w-72 rounded-full bg-white/5 blur-3xl" />
       <div className="pointer-events-none absolute bottom-[-20%] left-[-10%] h-72 w-72 rounded-full bg-white/5 blur-3xl" />
 
@@ -206,10 +206,10 @@ export function Hero({ onOpenStudio }: { onOpenStudio?: () => void }) {
                 00:12 / 04:42
               </div>
 
-              {/* CapGen badge */}
+              {/* Editron badge */}
               <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-md bg-card/95 px-2 py-1 text-[10px] font-bold tracking-wide text-white ring-1 ring-white/10">
                 <span className="size-2 rounded-full bg-primary" />
-                CapGen · Live
+                Editron · Live
               </div>
             </div>
 

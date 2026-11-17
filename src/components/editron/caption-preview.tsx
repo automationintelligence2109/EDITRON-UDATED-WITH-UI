@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useRef, useEffect } from "react";
-import { CAPGEN_FONTS, getFontFamily } from "@/lib/languages";
+import { EDITRON_FONTS, getFontFamily } from "@/lib/languages";
 import {
   activeSegmentIndex,
   getActiveWordIndex,
@@ -15,6 +15,7 @@ import {
 import { activeBrollAt, isBrollImage, type BRollClip } from "@/lib/broll";
 import { activeBrollTransitionAt } from "@/lib/broll-transitions";
 import { cn } from "@/lib/utils";
+import { isInterruptedPlayback } from "@/lib/media-playback";
 
 type Props = {
   videoUrl: string | null;
@@ -36,6 +37,7 @@ type Props = {
 
 function playTransitionVideo(video: HTMLVideoElement) {
   video.play().catch((error: unknown) => {
+    if (isInterruptedPlayback(error, video)) return;
     console.error("[CaptionPreview] Transition playback failed", error);
   });
 }
@@ -57,9 +59,9 @@ export function CaptionPreview({
   hookTitle = "",
   onChangeStyle,
 }: Props) {
-  const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const captionRef = useRef<HTMLDivElement>(null);
+  const draggingPointerRef = useRef<number | null>(null);
   const activeBrollVideoRef = useRef<HTMLVideoElement>(null);
   const transitionVideoRef = useRef<HTMLVideoElement>(null);
   const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
@@ -238,6 +240,7 @@ export function CaptionPreview({
       brollVideo.pause();
     } else {
       brollVideo.play().catch((error: unknown) => {
+        if (isInterruptedPlayback(error, brollVideo)) return;
         console.error("[CaptionPreview] B-roll playback failed", error);
       });
     }
@@ -258,39 +261,26 @@ export function CaptionPreview({
         : "w-full"
   );
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
+  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.preventDefault();
+    draggingPointerRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
   };
 
-  useEffect(() => {
-    const handleGlobalMouseMove = (e: MouseEvent) => {
-      if (!isDragging || !containerRef.current || !captionRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
-      const xPercent = ((e.clientX - rect.left) / rect.width) * 100;
-      const yPercent = ((e.clientY - rect.top) / rect.height) * 100;
-      captionRef.current.style.left = `${xPercent}%`;
-      captionRef.current.style.top = `${yPercent}%`;
-      onChangeStyle?.({
-        posX: xPercent - 50,
-        posY: yPercent - getCaptionPositionBase(style.position)
-      });
-    };
-
-    const handleGlobalMouseUp = () => {
-      setIsDragging(false);
-    };
-
-    if (isDragging) {
-      window.addEventListener("mousemove", handleGlobalMouseMove);
-      window.addEventListener("mouseup", handleGlobalMouseUp);
-    }
-
-    return () => {
-      window.removeEventListener("mousemove", handleGlobalMouseMove);
-      window.removeEventListener("mouseup", handleGlobalMouseUp);
-    };
-  }, [isDragging, onChangeStyle, style.position]);
+  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (draggingPointerRef.current !== event.pointerId || !containerRef.current || !captionRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const xPercent = Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100));
+    const yPercent = Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100));
+    captionRef.current.style.left = `${xPercent}%`;
+    captionRef.current.style.top = `${yPercent}%`;
+    onChangeStyle?.({
+      posX: xPercent - 50,
+      posY: yPercent - getCaptionPositionBase(style.position),
+    });
+  };
 
   return (
     <div
@@ -322,8 +312,11 @@ export function CaptionPreview({
             onPlay={() => {
               const transitionVideo = transitionVideoRef.current;
               if (transitionVideo) playTransitionVideo(transitionVideo);
-              activeBrollVideoRef.current?.play().catch((error: unknown) => {
-                console.error("[CaptionPreview] B-roll playback failed", error);
+              const brollVideo = activeBrollVideoRef.current;
+              brollVideo?.play().catch((error: unknown) => {
+                if (!isInterruptedPlayback(error, brollVideo)) {
+                  console.error("[CaptionPreview] B-roll playback failed", error);
+                }
               });
             }}
             onPause={() => {
@@ -376,6 +369,7 @@ export function CaptionPreview({
               const video = e.currentTarget;
               video.currentTime = activeBroll.trimStart ?? 0;
               video.play().catch((error: unknown) => {
+                if (isInterruptedPlayback(error, video)) return;
                 console.error("[CaptionPreview] B-roll loop playback failed", error);
               });
             }}
@@ -443,8 +437,12 @@ export function CaptionPreview({
             <div
               key={activeSeg.id}
               ref={captionRef}
-              onMouseDown={handleMouseDown}
-              className="absolute select-none pointer-events-auto"
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={() => { draggingPointerRef.current = null; }}
+              onPointerCancel={() => { draggingPointerRef.current = null; }}
+              onLostPointerCapture={() => { draggingPointerRef.current = null; }}
+              className="absolute select-none touch-none pointer-events-auto cursor-move"
               style={{
                 width: "88%",
                 height: `${wordLayout.height}px`,
@@ -587,4 +585,4 @@ function hexWithOpacity(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-export { CAPGEN_FONTS };
+export { EDITRON_FONTS };

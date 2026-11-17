@@ -135,7 +135,7 @@ export function HomeDashboard({
               <p className="mb-5 text-xs font-medium uppercase tracking-[0.2em] text-zinc-500">
                 Your creative workspace
               </p>
-              <h1 className="max-w-3xl font-serif text-5xl leading-[1.05] tracking-tight text-zinc-100 sm:text-6xl lg:text-7xl">
+              <h1 className="max-w-3xl font-serif text-4xl leading-[1.05] tracking-tight text-zinc-100 sm:text-6xl lg:text-7xl">
                 Make something
                 <br />
                 remarkable.

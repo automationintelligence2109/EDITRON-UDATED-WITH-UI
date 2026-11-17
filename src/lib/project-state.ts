@@ -5,6 +5,7 @@ const segmentSchema = z.object({
   start: z.number().finite().min(0),
   end: z.number().finite().min(0),
   text: z.string().max(20_000),
+  hidden: z.boolean().optional(),
   words: z.array(z.object({
     word: z.string(),
     start: z.number().finite(),
@@ -70,6 +71,7 @@ const styleSchema = z.object({
 const brollSchema = z.object({
   id: z.string().min(1).max(200),
   windowId: z.string().max(200),
+  segmentId: z.string().min(1).max(200).optional(),
   start: z.number().finite().min(0),
   end: z.number().finite().min(0),
   source: z.enum(["pexels", "pixabay", "user"]),
@@ -124,6 +126,7 @@ export const projectDetailsSchema = z.object({
     name: z.string(),
     createdAt: z.number().finite(),
     updatedAt: z.number().finite(),
+    sourceKey: z.string().min(1).max(1_000),
     snapshot: projectSnapshotSchema,
   }),
   videoUrl: z.string().url(),

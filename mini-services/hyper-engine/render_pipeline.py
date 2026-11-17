@@ -53,7 +53,7 @@ class HyperCaptionsPipeline:
                             "trimEnd": broll.get("trimEnd", None),
                         })
 
-            # STEP 1: Transcribe via CapGen Whisper Service
+            # STEP 1: Transcribe via Editron Whisper Service
             print("📝 Transcribing audio...")
             try:
                 with open(video_path, "rb") as f:

@@ -1,4 +1,4 @@
-import { CapGenLogo } from "./logo";
+import { EditronLogo } from "./logo";
 import { Instagram, Github, Twitter } from "lucide-react";
 
 const FOOTER_COLUMNS = [
@@ -100,7 +100,7 @@ export function Footer() {
 
         <div className="mt-12 flex flex-col items-start justify-between gap-4 border-t border-white/10 pt-6 sm:flex-row sm:items-center">
           <div className="flex items-center gap-4 text-xs text-white/50">
-            <span>© 2026 CapGen</span>
+            <span>© 2026 Editron</span>
             <a href="#" className="hover:text-white">Terms</a>
             <a href="#" className="hover:text-white">Privacy</a>
           </div>
@@ -113,4 +113,4 @@ export function Footer() {
   );
 }
 
-export { CapGenLogo };
+export { EditronLogo };

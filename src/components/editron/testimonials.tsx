@@ -37,7 +37,7 @@ const TESTIMONIALS: Testimonial[] = [
     initial: "R",
   },
   {
-    quote: "Word-timed captions are the future. CapGen nailed it — every word snaps to its millisecond.",
+    quote: "Word-timed captions are the future. Editron nailed it — every word snaps to its millisecond.",
     name: "Karnan V",
     role: "Wedding filmmaker",
     initial: "K",
@@ -61,7 +61,7 @@ const TESTIMONIALS: Testimonial[] = [
     initial: "D",
   },
   {
-    quote: "I tried every caption tool. CapGen is the only one that handles 14 Indian languages without breaking.",
+    quote: "I tried every caption tool. Editron is the only one that handles 14 Indian languages without breaking.",
     name: "Chandana Nair",
     role: "YouTube producer",
     initial: "C",
@@ -98,10 +98,10 @@ export function Testimonials() {
             Editor reviews
           </div>
           <h2 className="text-balance text-3xl font-extrabold tracking-tight text-white sm:text-4xl">
-            Editors stopped fighting their <span className="capgen-gradient-text">caption workflow</span>
+            Editors stopped fighting their <span className="editron-gradient-text">caption workflow</span>
           </h2>
           <p className="mx-auto mt-3 max-w-2xl text-base text-[#a0a0a0]">
-            From wedding films to Tollywood vlogs, CapGen runs in the background of their day.
+            From wedding films to Tollywood vlogs, Editron runs in the background of their day.
           </p>
         </div>
 

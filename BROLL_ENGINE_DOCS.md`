@@ -1,4 +1,4 @@
-# CapGen B-Roll Engine: Technical Documentation & Progress Report
+# Editron B-Roll Engine: Technical Documentation & Progress Report
 
 ## 1. Overview
 The B-Roll engine is a professional Server-Side Rendering (SSR) system that allows AI-driven or user-uploaded B-roll clips to be automatically applied to a video. The system ensures high-quality, aspect-ratio consistent cutaways that are fully editable by the user.
@@ -56,8 +56,8 @@ The "heavy lifter" that produces the final MP4.
 ## 4. Maintenance Guide for Future Updates
 
 ### To change the UI:
-- Modify `src/components/capgen/segment-card.tsx` for the layout.
-- Modify `src/components/capgen/broll-trimmer-modal.tsx` for the trimming experience.
+- Modify `src/components/editron/segment-card.tsx` for the layout.
+- Modify `src/components/editron/broll-trimmer-modal.tsx` for the trimming experience.
 
 ### To change the Rendering Logic:
 - Update `mini-services/hyper-engine/renderer.py` to modify FFmpeg filters (e.g., changing transition types or scaling methods).

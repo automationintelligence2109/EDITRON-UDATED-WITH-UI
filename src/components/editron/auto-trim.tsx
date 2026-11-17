@@ -27,10 +27,10 @@ export function AutoTrim() {
           </div>
           <h2 className="text-balance text-3xl font-extrabold leading-tight tracking-tight text-white sm:text-4xl">
             It cuts the bluff.{" "}
-            <span className="capgen-gradient-text">Keeps the best take.</span>
+            <span className="editron-gradient-text">Keeps the best take.</span>
           </h2>
           <p className="mt-4 text-base text-[#a0a0a0]">
-            CapGen listens to the speech — not the waveform — and surgically removes
+            Editron listens to the speech — not the waveform — and surgically removes
             silences, filler words, false starts and repeated takes. Every cut is shown
             in the timeline. One click restores.
           </p>
@@ -112,7 +112,7 @@ export function AutoTrim() {
             {/* After trim */}
             <div>
               <div className="mb-1.5 flex items-center justify-between text-xs">
-                <span className="font-semibold text-[#FF6B1A]">After CapGen</span>
+                <span className="font-semibold text-[#FF6B1A]">After Editron</span>
                 <span className="font-mono font-bold text-[#FF6B1A]">02:47</span>
               </div>
               <div className="flex h-9 overflow-hidden rounded-md bg-gradient-to-r from-[#FF6B1A] to-[#FFB27A]">

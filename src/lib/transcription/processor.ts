@@ -15,6 +15,8 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import Replicate from "replicate";
 import { getR2Client, getUserR2Prefix } from "@/lib/r2";
+import { applyAutoEmojis } from "@/lib/emojis";
+import { createReplicateFetch, isReplicateRateLimitError } from "@/lib/transcription/replicate-fetch";
 import type {
   TranscriptionJobData,
   TranscriptionProgress,
@@ -36,6 +38,7 @@ type WordItem = { word: string; start: number; end: number };
 type WhisperCaption = { start: number; end: number; text: string; words: WordItem[] };
 
 export class TranscriptionInputError extends Error {}
+export class TranscriptionServiceError extends Error {}
 
 function isReplicateModelVersion(
   value: string,
@@ -105,14 +108,14 @@ function toWords(output: any): WordItem[] {
   return words;
 }
 
-function groupIntoCaptions(words: WordItem[], wordsPerCaption: number): WhisperCaption[] {
+export function groupIntoCaptions(words: WordItem[], wordsPerCaption: number): WhisperCaption[] {
   const captions: WhisperCaption[] = [];
   for (let i = 0; i < words.length; i += wordsPerCaption) {
     const chunk = words.slice(i, i + wordsPerCaption);
     captions.push({
       start: chunk[0].start,
       end: chunk[chunk.length - 1].end,
-      text: chunk.map((word) => word.word).join(" "),
+      text: applyAutoEmojis(chunk.map((word) => word.word).join(" ")),
       words: chunk,
     });
   }
@@ -241,16 +244,24 @@ export async function processTranscriptionJob(
     }
 
     await updateProgress(onProgress, "transcribing", 65);
-    const replicate = new Replicate({ auth: replicateToken });
-    const output = await replicate.run(replicateModelVersion, {
-      input: {
-        audio: audioUrl,
-        translate: job.mode === "translate",
-        transcription: "plain text",
-        temperature: 0,
-        condition_on_previous_text: true,
-      },
-    });
+    const replicate = new Replicate({ auth: replicateToken, fetch: createReplicateFetch() });
+    let output: object;
+    try {
+      output = await replicate.run(replicateModelVersion, {
+        input: {
+          audio: audioUrl,
+          translate: job.mode === "translate",
+          transcription: "plain text",
+          temperature: 0,
+          condition_on_previous_text: true,
+        },
+      });
+    } catch (error) {
+      if (isReplicateRateLimitError(error)) {
+        throw new TranscriptionServiceError("The transcription service is busy. Please wait a moment and try again.");
+      }
+      throw error;
+    }
     const words = toWords(output);
     if (words.length === 0) {
       throw new TranscriptionInputError("No speech detected in this video.");

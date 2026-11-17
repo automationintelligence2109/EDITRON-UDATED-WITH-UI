@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { projectSnapshotSchema, updateProjectSchema } from "@/lib/project-state";
 import { createR2ReadUrl, getUserR2Prefix } from "@/lib/r2";
 import { getAuthenticatedUserId } from "@/lib/server-auth";
+import { projectStorageConfigurationError } from "@/lib/project-storage";
 
 export const runtime = "nodejs";
 
@@ -14,6 +15,8 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
     if (!userId) {
       return NextResponse.json({ error: "Sign in to open this project." }, { status: 401 });
     }
+    const configurationError = projectStorageConfigurationError();
+    if (configurationError) return configurationError;
 
     const { id } = await params;
     const project = await db.project.findFirst({ where: { id, userId } });
@@ -58,6 +61,7 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
         name: project.name,
         createdAt: project.createdAt.getTime(),
         updatedAt: project.updatedAt.getTime(),
+        sourceKey: project.sourceKey,
         snapshot: { ...snapshot.data, brolls },
       },
       videoUrl: await createR2ReadUrl(project.sourceKey),
@@ -74,6 +78,8 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     if (!userId) {
       return NextResponse.json({ error: "Sign in to save your project." }, { status: 401 });
     }
+    const configurationError = projectStorageConfigurationError();
+    if (configurationError) return configurationError;
 
     const { id } = await params;
     const payload = updateProjectSchema.safeParse(await request.json());

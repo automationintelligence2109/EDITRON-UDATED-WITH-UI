@@ -67,12 +67,12 @@ export const EMOJI_MAP: Record<string, string[]> = {
 
 export function applyAutoEmojis(text: string): string {
   const words = text.split(/\s+/);
-  const processedWords = words.map(word => {
+  const processedWords = words.map((word, index) => {
     // Clean word of punctuation for better matching
     const cleanWord = word.toLowerCase().replace(/[.,!?;:()]/g, "");
     const emojis = EMOJI_MAP[cleanWord];
 
-    if (emojis) {
+    if (emojis && !/\p{Extended_Pictographic}/u.test(words[index + 1] || "")) {
       // Pick a random emoji from the cluster to make it feel natural
       const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
       return `${word} ${randomEmoji}`;

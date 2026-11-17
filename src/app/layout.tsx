@@ -4,22 +4,22 @@ import { Toaster } from "@/components/ui/toaster";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "CapGen — The only captioning tool you always needed.",
-  description: "CapGen turns any video into caption-ready, word-timed subtitles in 82 languages — 14 Indian, 68 international. Auto Trim silences, style captions, export SRT/VTT.",
-  keywords: ["CapGen", "AI captions", "video subtitles", "ASR", "word-timed captions", "SRT generator", "Indian languages", "Hinglish captions"],
-  authors: [{ name: "CapGen" }],
+  title: "Editron.si",
+  description: "Editron turns any video into caption-ready, word-timed subtitles in 82 languages — 14 Indian, 68 international. Auto Trim silences, style captions, export SRT/VTT.",
+  keywords: ["Editron", "AI captions", "video subtitles", "ASR", "word-timed captions", "SRT generator", "Indian languages", "Hinglish captions"],
+  authors: [{ name: "Editron" }],
   icons: {
-    icon: "/logo.svg",
+    icon: { url: "/editron-icon.png?v=2", type: "image/png" },
   },
   openGraph: {
-    title: "CapGen — The only captioning tool you always needed.",
+    title: "Editron.si",
     description: "82 languages. 14 Indian, 68 international. Auto Trim, word-timed captions, SRT/VTT export.",
-    siteName: "CapGen",
+    siteName: "Editron",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "CapGen — AI Caption Generator",
+    title: "Editron.si",
     description: "82 languages. Auto Trim. Word-timed captions. SRT export.",
   },
 };

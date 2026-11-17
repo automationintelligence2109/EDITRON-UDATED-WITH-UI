@@ -1,4 +1,4 @@
-export const CAPGEN_FONTS = [
+export const EDITRON_FONTS = [
   { value: "inter", label: "Inter", cssFamily: "Inter", category: "Modern" },
   { value: "montserrat", label: "Montserrat", cssFamily: "Montserrat", category: "Modern" },
   { value: "poppins", label: "Poppins", cssFamily: "Poppins", category: "Modern" },
@@ -17,6 +17,6 @@ export const CAPGEN_FONTS = [
 ];
 
 export function getFontFamily(fontValue: string): string {
-  const font = CAPGEN_FONTS.find((f) => f.value === fontValue);
+  const font = EDITRON_FONTS.find((f) => f.value === fontValue);
   return font ? `var(--font-${font.value})` : "sans-serif";
 }

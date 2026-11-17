@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { createProjectSchema } from "@/lib/project-state";
 import { createR2ReadUrl, getUserR2Prefix } from "@/lib/r2";
 import { ensureGuestUser, getAuthenticatedUserId } from "@/lib/server-auth";
+import { projectStorageConfigurationError } from "@/lib/project-storage";
 
 export const runtime = "nodejs";
 
@@ -12,6 +13,8 @@ export async function GET() {
     if (!userId) {
       return NextResponse.json({ error: "Sign in to view your projects." }, { status: 401 });
     }
+    const configurationError = projectStorageConfigurationError();
+    if (configurationError) return configurationError;
 
     const projects = await db.project.findMany({
       where: { userId },
@@ -47,6 +50,8 @@ export async function POST(request: NextRequest) {
     if (!userId) {
       return NextResponse.json({ error: "Sign in to save your project." }, { status: 401 });
     }
+    const configurationError = projectStorageConfigurationError();
+    if (configurationError) return configurationError;
 
     const payload = createProjectSchema.safeParse(await request.json());
     if (!payload.success) {

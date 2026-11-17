@@ -5,6 +5,9 @@ import {
   getCaptionWordRenderState,
   getCaptionWords,
   activeSegmentIndex,
+  generateSRT,
+  generateVTT,
+  generateTXT,
   layoutCaptionWords,
   type CaptionSegment,
 } from "./captions";
@@ -45,6 +48,22 @@ test("keeps the previous caption visible across tiny transcription timing gaps",
 
   captions[1].start = 1.4;
   assert.equal(activeSegmentIndex(captions, 1.1), -1);
+});
+
+test("hidden captions stay out of preview timing and text exports", () => {
+  const captions: CaptionSegment[] = [
+    { id: "first", start: 0, end: 1, text: "Visible" },
+    { id: "second", start: 1.1, end: 2, text: "Hidden", hidden: true },
+    { id: "third", start: 2.1, end: 3, text: "Restored", hidden: false },
+  ];
+
+  assert.equal(activeSegmentIndex(captions, 1.5), -1);
+  assert.equal(activeSegmentIndex(captions, 2.05), -1);
+  assert.equal(activeSegmentIndex(captions, 2.5), 2);
+  assert.equal(generateTXT(captions), "Visible Restored");
+  assert.doesNotMatch(generateSRT(captions), /Hidden/);
+  assert.match(generateSRT(captions), /2\n00:00:02,100/);
+  assert.doesNotMatch(generateVTT(captions), /Hidden/);
 });
 
 test("applies the cubic blur reveal to each spoken word", () => {

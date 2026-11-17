@@ -14,17 +14,18 @@ import type { BRollClip } from "@/lib/broll";
 import { BrollTrimmerModal } from "./broll-trimmer-modal";
 
 type SegmentCardProps = {
-  segment: CaptionSegment & { deleted?: boolean };
+  segment: CaptionSegment;
   index: number;
   isActive: boolean;
   onUpdate: (id: string, patch: Partial<CaptionSegment>) => void;
-  onDelete: (id: string) => void;
+  onToggleHidden: (id: string) => void;
   onSeek: (t: number) => void;
   broll: BRollClip | null;
   onAssignBroll: (segmentId: string, clip: any) => void;
-  onRegenerateBroll: (clip: BRollClip) => void;
+  onRegenerateBroll: (clip: BRollClip) => Promise<void>;
   onRemoveBroll: (windowId: string) => void;
-  onFetchAndAssignBroll: (segmentId: string, text: string) => void;
+  onFetchAndAssignBroll: (segmentId: string, text: string) => Promise<void>;
+  onBrollActivityChange: (change: number) => void;
   suggestions: any; // SuggestionResult from BRollPanel
 };
 
@@ -33,19 +34,21 @@ export function SegmentCard({
   index,
   isActive,
   onUpdate,
-  onDelete,
+  onToggleHidden,
   onSeek,
   broll,
   onAssignBroll,
   onRegenerateBroll,
   onRemoveBroll,
   onFetchAndAssignBroll,
+  onBrollActivityChange,
   suggestions,
 }: SegmentCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [text, setText] = useState(segment.text);
   const [isUploading, setIsUploading] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [isAddingBroll, setIsAddingBroll] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [trimmingClip, setTrimmingClip] = useState<BRollClip | null>(null);
@@ -60,12 +63,20 @@ export function SegmentCard({
   const availableClips = s?.clips || [];
 
   const handleAddBroll = async () => {
-    await onFetchAndAssignBroll(segment.id, segment.text);
+    setIsAddingBroll(true);
+    onBrollActivityChange(1);
+    try {
+      await onFetchAndAssignBroll(segment.id, segment.text);
+    } finally {
+      onBrollActivityChange(-1);
+      setIsAddingBroll(false);
+    }
   };
 
   const handleManualSearch = async () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
+    onBrollActivityChange(1);
     try {
       const res = await fetch("/api/broll", {
         method: "POST",
@@ -96,6 +107,7 @@ export function SegmentCard({
     } catch (error) {
       toast({ title: "Search error", description: "Failed to fetch manual B-roll.", variant: "destructive" });
     } finally {
+      onBrollActivityChange(-1);
       setIsSearching(false);
       setSearchQuery("");
       setShowSearch(false);
@@ -107,6 +119,7 @@ export function SegmentCard({
     if (!file) return;
 
     setIsUploading(true);
+    onBrollActivityChange(1);
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -148,6 +161,7 @@ export function SegmentCard({
         variant: "destructive",
       });
     } finally {
+      onBrollActivityChange(-1);
       setIsUploading(false);
     }
   };
@@ -156,16 +170,16 @@ export function SegmentCard({
     <>
       <div
         className={cn(
-          "group relative flex flex-col gap-3 rounded-xl border p-4 transition-all",
+          "group relative flex min-w-0 flex-col gap-3 rounded-xl border p-3 transition-all sm:p-4",
           isActive
             ? "border-[#FF6B1A] bg-[#1a1a1a] shadow-[0_0_15px_rgba(255,107,26,0.1)]"
             : "border-[#2a2a2a] bg-[#161616] opacity-80 hover:opacity-100",
-          segment.deleted && "border-red-900/50 bg-red-950/10 opacity-50"
+          segment.hidden && "border-zinc-700 bg-zinc-900/50 opacity-60"
         )}
       >
         {/* Top Row: Time, Status, and Query */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <span className="grid size-6 place-items-center rounded bg-secondary text-[10px] font-bold text-primary">
               {index + 1}
             </span>
@@ -177,23 +191,28 @@ export function SegmentCard({
                 <Check className="size-3" /> Applied
               </span>
             )}
+            {segment.hidden && (
+              <span className="text-xs text-zinc-300">Caption hidden</span>
+            )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 shrink items-center gap-1 sm:gap-3">
             {broll && (
-              <span className="rounded bg-[#2a2a2a] px-1.5 py-0.5 text-[10px] text-white/60">
+              <span className="max-w-24 truncate rounded bg-[#2a2a2a] px-1.5 py-0.5 text-[10px] text-white/60">
                 "{broll.query}"
               </span>
             )}
             <button
-              onClick={() => onDelete(segment.id)}
+              type="button"
+              onClick={() => onToggleHidden(segment.id)}
               className={cn(
-                "grid size-7 place-items-center rounded transition-colors",
-                segment.deleted ? "bg-green-500/20 text-green-500" : "text-muted-foreground hover:bg-red-500/20 hover:text-red-500"
+                "grid size-10 shrink-0 place-items-center rounded transition-colors sm:size-7",
+                segment.hidden ? "bg-green-500/20 text-green-400" : "text-muted-foreground hover:bg-zinc-800 hover:text-white"
               )}
-              title={segment.deleted ? "Restore segment" : "Remove bad take"}
+              title={segment.hidden ? "Show caption" : "Hide caption"}
+              aria-label={segment.hidden ? `Show caption ${index + 1}` : `Hide caption ${index + 1}`}
             >
-              {segment.deleted ? <Check className="size-3.5" /> : <X className="size-3.5" />}
+              {segment.hidden ? <Check className="size-3.5" /> : <X className="size-3.5" />}
             </button>
           </div>
         </div>
@@ -202,40 +221,44 @@ export function SegmentCard({
         <div className="flex items-start gap-3">
           <button
             onClick={() => onSeek(segment.start)}
-            className="grid size-8 shrink-0 place-items-center rounded-full bg-secondary text-muted-foreground hover:bg-primary hover:text-white transition-colors"
+            aria-label={`Play caption ${index + 1}`}
+            className="grid size-10 shrink-0 place-items-center rounded-full bg-secondary text-muted-foreground hover:bg-primary hover:text-white transition-colors sm:size-8"
           >
             <Play className="size-3.5 ml-0.5" />
           </button>
 
-          <div className="flex-1">
+          <div className="min-w-0 flex-1">
             {isEditing ? (
               <Input
                 autoFocus
+                aria-label={`Edit caption ${index + 1}`}
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 onBlur={handleCommit}
                 onKeyDown={(e) => e.key === "Enter" && handleCommit()}
-                className="h-9 border-primary bg-card text-sm"
+                className="h-10 border-primary bg-card text-base sm:h-9 sm:text-sm"
               />
             ) : (
-              <div
+              <button
+                type="button"
+                aria-label={`Edit caption ${index + 1}`}
                 onClick={() => {
                   setText(segment.text);
                   setIsEditing(true);
                 }}
-                className="cursor-text rounded-md border border-transparent px-2 py-1.5 text-sm text-white hover:border-border hover:bg-background transition-colors"
+                className="w-full cursor-text break-words rounded-md border border-transparent px-2 py-1.5 text-left text-sm text-white hover:border-border hover:bg-background focus-visible:border-primary focus-visible:outline-none transition-colors"
               >
                 {segment.text}
-              </div>
+              </button>
             )}
           </div>
         </div>
 
         {/* Bottom Row: B-Roll Controls */}
-        <div className="flex items-center justify-between pt-2 border-t border-border/50">
-          <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
             {broll ? (
-              <div className="flex items-center gap-4">
+              <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-4">
                 <div
                   className={cn(
                     "relative h-14 w-24 overflow-hidden rounded-lg border border-border bg-black transition-colors",
@@ -264,35 +287,38 @@ export function SegmentCard({
                 </Button>
               </div>
             ) : (
-              <div className="flex items-center gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleAddBroll}
-                  className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-primary"
+                  disabled={isAddingBroll}
+                  className="h-10 gap-1.5 text-xs text-muted-foreground hover:text-primary sm:h-7"
                 >
                   <Film className="size-3" /> Add B-Roll
                 </Button>
 
                 {showSearch ? (
-                  <div className="flex items-center gap-2 pl-2 border-l border-border animate-in fade-in slide-in-from-left-2 duration-200">
+                  <div className="flex max-w-full items-center gap-2 animate-in fade-in slide-in-from-left-2 duration-200 sm:border-l sm:border-border sm:pl-2">
                     <Input
                       autoFocus
                       placeholder="Search keyword..."
+                      aria-label={`Search B-roll for caption ${index + 1}`}
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") handleManualSearch();
                         if (e.key === "Escape") setShowSearch(false);
                       }}
-                      className="h-7 w-32 text-[10px] bg-background border-border"
+                      className="h-10 w-32 max-w-full bg-background border-border text-base sm:h-7 sm:text-xs"
                     />
                     <Button
                       size="sm"
                       variant="ghost"
                       onClick={handleManualSearch}
+                      aria-label="Search B-roll"
                       disabled={isSearching || !searchQuery.trim()}
-                      className="h-7 w-7 p-0 text-muted-foreground hover:text-primary"
+                      className="h-10 w-10 p-0 text-muted-foreground hover:text-primary sm:h-7 sm:w-7"
                     >
                       {isSearching ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
                     </Button>
@@ -302,7 +328,7 @@ export function SegmentCard({
                     variant="outline"
                     size="sm"
                     onClick={() => setShowSearch(true)}
-                    className="h-7 w-7 p-0 rounded-full border-border text-muted-foreground hover:text-primary"
+                    className="h-10 w-10 p-0 rounded-full border-border text-muted-foreground hover:text-primary sm:h-7 sm:w-7"
                     title="Search B-Roll"
                   >
                     <Search className="size-3" />
@@ -312,7 +338,8 @@ export function SegmentCard({
                 <div className="relative">
                   <input
                     type="file"
-                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    aria-label={`Upload B-roll for caption ${index + 1}`}
+                    className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
                     accept="video/mp4,video/quicktime,image/jpeg,image/png"
                     onChange={handleFileUpload}
                     disabled={isUploading}
@@ -320,7 +347,7 @@ export function SegmentCard({
                   <Button
                     variant="outline"
                     size="sm"
-                    className="h-7 gap-1.5 text-xs text-muted-foreground hover:text-primary"
+                    className="h-10 gap-1.5 text-xs text-muted-foreground hover:text-primary sm:h-7"
                     disabled={isUploading}
                   >
                     {isUploading ? (
@@ -339,14 +366,19 @@ export function SegmentCard({
             <Button
               variant="outline"
               size="sm"
-              onClick={() => {
+              onClick={async () => {
                 if (broll.source === "user") {
                   setTrimmingClip(broll);
                 } else {
-                  onRegenerateBroll(broll);
+                  onBrollActivityChange(1);
+                  try {
+                    await onRegenerateBroll(broll);
+                  } finally {
+                    onBrollActivityChange(-1);
+                  }
                 }
               }}
-              className="h-8 gap-1.5 border-[#2a2a2a] bg-black text-xs text-white hover:bg-accent"
+              className="h-10 gap-1.5 border-[#2a2a2a] bg-black text-xs text-white hover:bg-accent sm:h-8"
             >
               <RefreshCw className="size-3" />
               {broll.source === "user" ? "Re-trim" : "Regenerate"}
@@ -380,21 +412,22 @@ export function SegmentCardWrapper({
   index,
   isActive,
   onUpdate,
-  onDelete,
+  onToggleHidden,
   onSeek,
   broll,
   onAssignBroll,
   onRegenerateBroll,
   onRemoveBroll,
   onFetchAndAssignBroll,
+  onBrollActivityChange,
   suggestions,
 }: SegmentCardProps) {
   return (
     <>
       <SegmentCard
         {...{
-          segment, index, isActive, onUpdate, onDelete, onSeek, broll,
-          onAssignBroll, onRegenerateBroll, onRemoveBroll, onFetchAndAssignBroll, suggestions
+          segment, index, isActive, onUpdate, onToggleHidden, onSeek, broll,
+          onAssignBroll, onRegenerateBroll, onRemoveBroll, onFetchAndAssignBroll, onBrollActivityChange, suggestions
         }}
       />
     </>

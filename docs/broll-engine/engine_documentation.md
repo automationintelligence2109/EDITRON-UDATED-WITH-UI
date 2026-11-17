@@ -1,7 +1,7 @@
-# 🎬 CapGen B-Roll Engine: Complete Technical Documentation
+# 🎬 Editron B-Roll Engine: Complete Technical Documentation
 
 ## 1. Overview
-The CapGen B-Roll Engine is a high-performance, automated visual overlay system designed for short-form AI video editing (TikTok, Reels, Shorts). Its primary purpose is to analyze a video transcript, identify high-value keywords, and automatically overlay relevant stock footage to maintain high viewer retention through "pattern interrupts."
+The Editron B-Roll Engine is a high-performance, automated visual overlay system designed for short-form AI video editing (TikTok, Reels, Shorts). Its primary purpose is to analyze a video transcript, identify high-value keywords, and automatically overlay relevant stock footage to maintain high viewer retention through "pattern interrupts."
 
 ---
 
