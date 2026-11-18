@@ -26,6 +26,11 @@ COPY . .
 # Disable Next.js telemetry
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# Prisma needs OpenSSL to select the correct query engine.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends openssl ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 # Generate the PostgreSQL Prisma client without connecting to a database.
 RUN DATABASE_URL="postgresql://build:build@localhost:5432/build?schema=public" npm run db:generate
 
@@ -63,6 +68,7 @@ RUN apt-get update && \
         python3-pip \
         ffmpeg \
         ca-certificates \
+        openssl \
         curl && \
     rm -rf /var/lib/apt/lists/*
 
